@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegis-scale"
+version = "0.1.0"
+description = "Distributionally-robust cloud capacity and EC2 Spot portfolio optimizer using Adaptive Conformal Inference, G/G/c queuing bounds, and CVaR MILP."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Abdelrahman H. Farag"}
+]
+dependencies = [
+    "numpy>=1.26.0",
+    "scipy>=1.12.0",
+    "pydantic>=2.6.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "boto3>=1.34.0",
+    "matplotlib>=3.8.0",
+]
+
+[project.optional-dependencies]
+infra = [
+    "aws-cdk-lib>=2.130.0",
+    "constructs>=10.3.0",
+    "cdk-nag>=2.28.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = "-q"

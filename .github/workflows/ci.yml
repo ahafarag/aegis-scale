@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Math Proofs, FastAPI & AWS CDK (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (for AWS CDK JSII synthesis)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install package and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,infra]"
+
+      - name: Run mathematical invariants, API, and AWS CDK synthesis tests
+        run: pytest -v
+
+      - name: Run real AWS CloudWatch ELB trace benchmark smoke check
+        if: matrix.python-version == '3.12'
+        run: python benchmarks/real_trace_benchmark.py --max-steps 300

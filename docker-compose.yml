@@ -1,0 +1,12 @@
+services:
+  aegis-scale:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aegis-scale-control-plane
+    ports:
+      - "8000:8000"
+    environment:
+      - AEGIS_CLUSTER_ID=prod-web-tier
+      - AEGIS_DRY_RUN=true
+    restart: unless-stopped

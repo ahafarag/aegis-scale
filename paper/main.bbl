@@ -1,0 +1,49 @@
+\begin{thebibliography}{1}
+
+\bibitem{gibbs2021adaptive}
+Isaac Gibbs and Emmanuel~J. Cand{\`e}s.
+\newblock Adaptive conformal inference under distribution shift.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS)},
+  volume~34, pages 1660--1672, 2021.
+
+\bibitem{huangfu2018parallelizing}
+Qi~Huangfu and J.~A.~Julian Hall.
+\newblock Parallelizing the dual revised simplex method.
+\newblock {\em Mathematical Programming Computation}, 10(1):119--142, 2018.
+
+\bibitem{kingman1961single}
+John F.~C. Kingman.
+\newblock The single server queue in heavy traffic.
+\newblock {\em Mathematical Proceedings of the Cambridge Philosophical
+  Society}, 57(4):902--904, 1961.
+
+\bibitem{lavin2015evaluating}
+Alexander Lavin and Subutai Ahmad.
+\newblock Evaluating real-time anomaly detection algorithms -- the {Numenta}
+  anomaly benchmark.
+\newblock In {\em IEEE 14th International Conference on Machine Learning and
+  Applications (ICMLA)}, pages 38--44, 2015.
+
+\bibitem{li2000default}
+David~X. Li.
+\newblock On default correlation: A copula function approach.
+\newblock {\em The Journal of Fixed Income}, 9(4):43--54, 2000.
+
+\bibitem{rockafellar2000optimization}
+R.~Tyrrell Rockafellar and Stanislav Uryasev.
+\newblock Optimization of conditional value-at-risk.
+\newblock {\em Journal of Risk}, 2(3):21--41, 2000.
+
+\bibitem{sakasegawa1977approximation}
+Hirotaka Sakasegawa.
+\newblock An approximation formula $l_q \simeq \alpha \cdot \rho^\beta / (1 -
+  \rho)$.
+\newblock {\em Annals of the Institute of Statistical Mathematics},
+  29(1):67--75, 1977.
+
+\bibitem{whitt1993approximations}
+Ward Whitt.
+\newblock Approximations for the {$GI/G/m$} queue.
+\newblock {\em Production and Operations Management}, 2(2):114--161, 1993.
+
+\end{thebibliography}
