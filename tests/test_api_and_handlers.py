@@ -89,6 +89,49 @@ def test_fastapi_endpoints_and_spot_evacuation() -> None:
     assert roi["aegis_scale"]["savings_vs_od_pct"] > 20.0
     assert roi["aegis_scale"]["sla_continuity_pct"] >= roi["greedy_spot"]["sla_continuity_pct"]
 
+    r_reg = client.get("/regions")
+    assert r_reg.status_code == 200
+    assert "eu-west-1" in r_reg.json()["supported_regions"]
+
+    r_k8s = client.post(
+        "/k8s/reconcile",
+        json={
+            "region": "eu-west-1",
+            "observed_rps": 3600.0,
+            "pod": {
+                "name": "inference-worker",
+                "cpu_vcpu": 1.0,
+                "memory_gib": 6.5,
+                "target_rps_per_pod": 90.0,
+            },
+        },
+    )
+    assert r_k8s.status_code == 200
+    k8s_body = r_k8s.json()
+    assert k8s_body["total_schedulable_pods"] >= k8s_body["required_pod_replicas"]
+    assert k8s_body["manifests"]["ec2_node_class"]["apiVersion"] == "karpenter.k8s.aws/v1"
+    assert len(k8s_body["manifests"]["node_pools"]) >= 2
+
+    # Security hardening tests for public internet exposure (AEGIS_PUBLIC_DEMO=true)
+    pub_client = TestClient(create_app(public_demo=True))
+    r_pub = pub_client.get("/")
+    assert r_pub.status_code == 200
+    assert r_pub.headers["X-Frame-Options"] == "DENY"
+    assert r_pub.headers["X-Content-Type-Options"] == "nosniff"
+    assert "frame-ancestors 'none'" in r_pub.headers["Content-Security-Policy"]
+    # Swagger UI disabled in public demo mode to reduce attack surface
+    assert pub_client.get("/docs").status_code == 404
+    # Oversized payload (>16 KiB) rejected with HTTP 413
+    r_big = pub_client.post("/optimize", content=b"x" * 20_000, headers={"Content-Type": "application/json"})
+    assert r_big.status_code == 413
+    # Public demo isolates per-request state so Visitor A cannot poison Visitor B
+    pub_client.post(
+        "/preemption-warning",
+        json={"instance_type": "c6a.xlarge", "az": "us-east-1a", "observed_rps": 3000.0},
+    )
+    r_clean = pub_client.get("/health")
+    assert r_clean.json()["aci_steps_processed"] == 0
+
 
 def test_lambda_handler_state_persistence_and_interruption_event() -> None:
     store = _InMemoryStateStore()

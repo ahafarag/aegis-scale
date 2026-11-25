@@ -1,113 +1,113 @@
-# AegisScale: Distributionally-Robust Cloud Capacity & Spot Portfolio Optimizer
+# AegisScale: Distributionally-Robust Cloud & Kubernetes Karpenter Capacity Optimizer
 
 [![CI](https://github.com/ahafarag/aegis-scale/actions/workflows/ci.yml/badge.svg)](https://github.com/ahafarag/aegis-scale/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](pyproject.toml)
-[![Solver](https://img.shields.io/badge/MILP_Solver-HiGHS-10b981.svg)](src/aegis_scale/math_core/cvar_milp.py)
+[![Karpenter](https://img.shields.io/badge/EKS_Karpenter-v1_Ready-326CE5.svg)](src/aegis_scale/k8s/karpenter.py)
 [![IaC](https://img.shields.io/badge/AWS_CDK-v2_Verified-FF9900.svg)](infra/stack.py)
-[![Paper](https://img.shields.io/badge/Paper-PDF_%26_LaTeX-b31b1b.svg)](paper/main.pdf)
+[![Paper](https://img.shields.io/badge/IEEE_Transactions_Preprint-PDF-b31b1b.svg)](paper/main.pdf)
 
-**AegisScale** is a mathematical control plane and AWS FinOps engine that bridges **distribution-free statistical learning**, **heavy-traffic queueing theory**, and **stochastic integer portfolio optimization** to solve a core infrastructure trade-off: **slashing cloud compute bills via EC2 Spot instances without sacrificing P99 tail-latency SLAs during flash traffic spikes or correlated Spot recalls.**
-
----
-
-## Executive Value Proposition
-
-Enterprise cloud teams routinely over-provision expensive `On-Demand` compute out of fear that `Spot` capacity recalls (2-minute warning) or sudden traffic surges will trigger SLA outages. Conversely, naive Spot cost-cutters concentrate workloads in the single cheapest pool and suffer severe brownouts during Availability Zone (AZ) or instance-family capacity drains.
-
-AegisScale treats heterogeneous EC2 pools (`On-Demand` + multi-AZ, multi-family `Spot`) as a risk-constrained financial portfolio updated every 60 seconds (and sub-second upon AWS EventBridge interruption signals):
-
-1. **Distribution-Free Demand Envelopes (Adaptive Conformal Inference):** Wraps an online scale-invariant Recursive Least Squares (RLS) harmonic-AR filter in Gibbs & Candes (2021) Adaptive Conformal Inference (ACI), guaranteeing finite-sample upper coverage $|T^{-1}\sum_{t=1}^T \text{err}_t - \alpha| \le \frac{1 + 2\gamma}{\gamma T}$ across arbitrary non-stationary regime shifts.
-2. **Tail-Latency Queueing Translation ($G/G/c$):** Maps conformal arrival-rate bounds into exact minimum safe vCPU capacity $C_{\text{req}}$ via Kingman-Sakasegawa heavy-traffic diffusion quantiles so stationary queueing delay satisfies $W_{q, 0.99} \le \tau_{\text{SLA}}$.
-3. **Correlated Preemption $\text{CVaR}_\beta$ MILP:** Generates correlated `(AZ, instance-family)` interruption scenarios via a three-factor Gaussian copula with antithetic variance reduction, then solves the exact Rockafellar-Uryasev Conditional Value-at-Risk Mixed-Integer Linear Program via **HiGHS** (`~47-63 ms` median solve time).
+**AegisScale** is a mathematical control plane for **Amazon EC2** and **Amazon EKS / Kubernetes Karpenter (`karpenter.sh/v1`)** clusters that unifies **Adaptive Conformal Inference**, **heavy-traffic $G/G/c$ queueing theory**, **2D container bin-packing**, and **Rockafellar-Uryasev $\text{CVaR}_\beta$ Mixed-Integer Linear Programming** to cut cloud compute bills by **34%–39% vs. equal-SLA On-Demand fleets ($p = 1.86 \times 10^{-9}$)** while sustaining **>99.1% P99 tail-latency SLA continuity** across flash traffic surges and correlated Spot recalls.
 
 ---
 
-## Empirical Validation on Real AWS CloudWatch ELB Telemetry (4,032 Intervals)
+## Core Architecture & Mathematical Guarantees
 
-Evaluated on **14 full days (`4,032` x 5-minute production intervals, `10.61x` peak-to-mean volatility)** of real AWS Elastic Load Balancer request-count telemetry from the Numenta Anomaly Benchmark (`realAWSCloudwatch` corpus, `benchmarks/real_trace_benchmark.py`) paired with correlated regional Spot recalls:
+1. **Layer 1 — Scale-Invariant RLS + Adaptive Conformal Inference (Theorem 1):**
+   Online Recursive Least Squares over normalized deltas and diurnal harmonics wrapped in Gibbs & Candes (2021) ACI guarantees distribution-free finite-sample demand coverage $|T^{-1}\sum_{t=1}^T \text{err}_t - \alpha_{\text{target}}| \le \frac{1 + 2\gamma}{\gamma T}$ without offline training or stationarity assumptions.
+2. **Layer 2 — $M/M/1$-Exact $G/G/c$ Tail Sizing & 2D Pod Packing (Lemma 1):**
+   Translates conformal arrival envelopes and node cold-start ramp buffers ($\hat{\lambda}_{\text{lead}} = \hat{U}_t + \dot{\lambda}_t\tau_{\text{boot}}$) into exact minimum safe vCPUs or two-dimensional `(vCPU, GiB)` Kubernetes pod replicas accounting for DaemonSet overhead across compute (`c7g`), balanced (`m7g`), and memory-optimized (`r7g`) families.
+3. **Layer 3 — Auxiliary-Free Correlated Spot $\text{CVaR}_\beta$ MILP (Lemma 2):**
+   A three-factor Gaussian copula with antithetic variates models correlated `(AZ, instance-family)` Spot recalls across `us-east-1`, `eu-west-1`, and `ap-northeast-1`. Constraining $\eta \ge 0$ eliminates $S$ auxiliary shortfall variables, allowing **HiGHS** to solve globally in **42–63 ms** (`328 ms` at $K = 210$ pools) and synthesize declarative `karpenter.sh/v1` `NodePool`, `EC2NodeClass`, and proactive `autoscaling/v1` `Scale` manifests.
 
-| Strategy | Annualized Spend | Savings vs. Iso-SLA On-Demand | P99 SLA Continuity | Spot-Storm Breaches |
+---
+
+## Multi-Dataset Empirical Generalization (Zero Hyperparameter Retuning)
+
+Evaluated with a **single locked policy** ($\alpha_{\text{target}} = 0.015$, $\tau_{\text{SLA}} = 25\,\text{ms}$, $\beta = 0.95$, $\rho_{\text{floor}} = 0.25$) across **four distinct real-world production traces** from the Numenta Anomaly Benchmark (`benchmarks/statistical_rigor.py`):
+
+| Real Production Dataset | Peak/Mean | Reactive HPA (55%) Continuity | Iso-SLA 100% OD Spend | Greedy Spot Continuity | **AegisScale Spend (Savings vs. Iso-OD)** | **AegisScale Continuity** |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **1. AWS-ELB-Web** *(HTTP Load Balancer)* | `4.77x` *(10.6x 14d)* | 67.00% *(Fails)* | \$36,375 / yr | 90.67% | **\$23,015 / yr (36.73%)** | **99.17%** *(99.53% 14d)* |
+| **2. AWS-EC2-Network** *(Ingress Bursts)* | `5.33x` | 82.17% *(Fails)* | \$51,599 / yr | 97.50% | **\$32,458 / yr (37.10%)** | **99.50%** *(0 storm br.)* |
+| **3. AWS-RDS-Compute** *(DB Step-Shift)* | `2.37x` | 99.83% | \$13,487 / yr | 88.17% | **\$8,842 / yr (34.45%)** | **99.17%** |
+| **4. Viral-Flash-Traffic** *(Twitter AAPL)* | **`22.65x`** | 94.33% *(Fails)* | \$51,612 / yr | 88.17% | **\$32,601 / yr (36.83%)** | **99.17%** |
+
+![Multi-Dataset Generalization](docs/figures/multi_dataset_generalization.png)
+
+---
+
+## 30-Seed Statistical Rigor, Ablations & Cold-Start Resilience
+
+### 1. 30-Seed Monte Carlo & Paired Wilcoxon Signed-Rank Tests (`AWS-ELB-Web`)
+
+| Strategy ($N = 30$ Seeds) | Annualized Cost (`Mean ± 95% CI`) | Savings vs. Iso-OD | P99 Continuity (`Mean ± 95% CI`) | Spot-Storm Breaches |
 | :--- | :---: | :---: | :---: | :---: |
-| **1a. Reactive On-Demand HPA** *(55% CPU Target)* | \$15,360 / yr | --- *(Fails SLA)* | **68.23%** *(1,281 breaches)* | 38 |
-| **1b. Iso-SLA 100% On-Demand** *(Conformal Sized)* | \$37,989 / yr | 0.00% *(Baseline)* | 99.08% | 0 |
-| **2. Greedy Cheapest Spot** *(Iso-Sized, single pool)* | \$13,872 / yr | 63.48% | **93.77%** *(251 breaches)* | **22** |
-| **3. Static 30/70 Mixed Heuristic** *(Iso-Sized)* | \$21,053 / yr | 44.58% | 99.01% | **2** |
-| **4. AegisScale (ACI + $G/G/c$ + $\text{CVaR}_{0.95}$ MILP)** | **\$24,419 / yr** | **35.72%** *(-\$13.5k/yr per tier)* | **99.53%** | **0** |
+| `Reactive HPA (55% CPU)` | \$15,373 ± \$5 | --- *(Fails SLA)* | 67.05% ± 0.26% | 16.50 ± 0.45 |
+| `Iso-SLA 100% On-Demand` | \$37,088 ± \$501 | 0.00% ± 0.00% | 98.81% ± 0.09% | 2.83 ± 0.30 |
+| `Greedy Cheapest Spot` | \$13,598 ± \$177 | 63.33% ± 0.03% | 91.31% ± 0.29% | 21.43 ± 0.86 |
+| `Static 30/70 Mixed Spot` | \$19,523 ± \$261 | 47.36% ± 0.02% | 97.78% ± 0.12% | 7.03 ± 0.56 |
+| **`AegisScale (Full)`** | **\$23,516 ± \$316** | **36.59% ± 0.03%** | **99.39% ± 0.07%** | **1.67 ± 0.34** |
 
-* **Exact Theorem 1 Empirical Match:** Across all 4,032 non-stationary real ELB intervals (`alpha_target = 1.500%`), AegisScale's realized conformal miscoverage rate converged to **1.488%** (within `0.012%` of theory), while median MILP solve latency was **46.8 ms**.
+* **Exact Two-Sided Paired Wilcoxon $p$-Values:** `p = 1.86e-9` across all four comparisons (strictly winning `30/30` independent seeds).
 
-![Real 14-Day AWS CloudWatch ELB Validation](docs/figures/real_aws_elb_trajectory.png)
+### 2. Architectural Ablation, Node Boot Delay (`0s–180s`), and 210-Pool Scalability
 
----
+* **5-Way Ablation:** Removing ACI collapses ELB continuity to `75.50%` (`193` combined breaches vs. `10`); freezing $\gamma = 10^{-9}$ (`Static Conformal`) inflates Viral Flash cost by **+11.3%**; removing $G/G/c$ queueing pooling wastes **+15.0%–15.9%** spend; ignoring copula correlation increases SLA breaches by **+50%**.
+* **Kubernetes Cold-Start Resilience:** Under a `120s` node boot delay, Reactive HPA drops to `39.50%` continuity (`2,829 ms` wait), while AegisScale sustains **97.33%** (`98.83%` at `60s`).
 
-## 7-Day Multi-Storm Stress Benchmark
+![Ablation and Cold-Start Resilience](docs/figures/ablation_and_coldstart.png)
 
-Evaluated across a 168-hour (`672` x 15-minute intervals) stress trace featuring diurnal cycles, heavy-tailed micro-bursts, **4 unannounced +95% flash crowds**, and **5 coordinated multi-AZ / instance-family AWS Spot recall storms** (`benchmarks/run_benchmarks.py`):
-
-| Strategy | Annualized Spend | Cost Reduction vs. On-Demand | Overall P99 SLA Continuity | Spot-Storm Breaches |
-| :--- | :---: | :---: | :---: | :---: |
-| **1. 100% On-Demand Reactive HPA** | \$17,128 / yr | 0.00% *(Baseline)* | 99.70% | 0 |
-| **2. Greedy Lowest-Price Spot** | \$6,490 / yr | 62.11% | **92.26%** *(52 breaches)* | **5** |
-| **3. Static 30/70 Mixed Heuristic** | \$10,021 / yr | 41.49% | 99.26% *(5 breaches)* | **1** |
-| **4. AegisScale (ACI + $G/G/c$ + $\text{CVaR}_{0.95}$ MILP)** | **\$10,504 / yr** | **38.67%** | **99.55%** | **0** |
-
-![Cost vs SLA Continuity Frontier](docs/figures/pareto_cost_vs_continuity.png)
-
-![7-Day Workload Envelope and Spend Trajectory](docs/figures/seven_day_trajectory.png)
+![HiGHS MILP Scalability](docs/figures/solver_scalability.png)
 
 ---
 
-## Mathematical Manuscript (arXiv LaTeX & Compiled PDF)
+## IEEE Transactions Manuscript & Documentation
 
-* **Compiled Research Paper (PDF):** [paper/main.pdf](paper/main.pdf)
-* **arXiv LaTeX Source & BibTeX:** [paper/main.tex](paper/main.tex) and [paper/references.bib](paper/references.bib)
-* **Markdown Technical Whitepaper:** [docs/mathematical_whitepaper.md](docs/mathematical_whitepaper.md)
-
-Includes formal proofs of **Theorem 1** (Finite-Sample Non-Stationary ACI Bound), **Lemma 1** (Exact $M/M/1$ Quantile Consistency & Global Bisection Uniqueness), and **Lemma 2** (Auxiliary-Free Non-Negative Shortfall $\text{CVaR}_\beta$ Linearization).
+* **Compiled IEEE Transactions Paper (PDF):** [paper/main.pdf](paper/main.pdf)
+* **LaTeX Source & BibTeX:** [paper/main.tex](paper/main.tex) and [paper/references.bib](paper/references.bib)
+* **Mathematical Whitepaper:** [docs/mathematical_whitepaper.md](docs/mathematical_whitepaper.md)
+* **Serverless Custom Subdomain Deployment (`Hostinger + AWS CDK`):** [docs/deploy_hostinger_subdomain.md](docs/deploy_hostinger_subdomain.md)
 
 ---
 
-## Production AWS Control-Plane Architecture
+## Repository Structure
 
-The `infra/` directory provides a complete, synthesizable **AWS CDK v2 (Python)** production stack verified by automated CloudFormation assertions (`tests/test_cdk_stack.py`):
-
-* **Compute Fleet (`AWS::AutoScaling::AutoScalingGroup` + `AWS::EC2::LaunchTemplate`):**
-  * Enforces **IMDSv2** (`HttpTokens: required`, `HttpPutResponseHopLimit: 2` for container compatibility) and **GP3 encrypted EBS** volumes.
-  * Zero inbound SSH keys; managed exclusively via **AWS Systems Manager Session Manager** (`AmazonSSMManagedInstanceCore`).
-  * `MixedInstancesPolicy` configured with `SpotAllocationStrategy: price-capacity-optimized`, `CapacityRebalance: true`, and `HealthCheckType: ELB` behind an Application Load Balancer.
-* **Event-Driven Control Loop:**
-  * **EventBridge Scheduler** (`rate(1 minute)`) with retry policy and KMS-encrypted SQS Dead-Letter Queue invoking the AegisScale Optimizer Lambda.
-  * **EventBridge Rule** listening to `EC2 Spot Instance Interruption Warning` and `EC2 Instance Rebalance Recommendation` for immediate sub-second pool evacuation.
-* **FinOps Audit & State Store (`AWS::DynamoDB::Table`):**
-  * On-demand capacity with Point-in-Time Recovery (`PITR`) storing serialized online ACI state and immutable per-cycle dollar-savings audit records, paired with **CloudWatch Embedded Metric Format (EMF)** telemetry.
+```text
+aegis-scale/
+├── paper/                           # Full 2-column IEEE Transactions LaTeX manuscript & compiled PDF
+├── docs/                            # Mathematical whitepaper, Hostinger deployment guide & PNG figures
+├── src/aegis_scale/
+│   ├── math_core/                   # Scale-invariant RLS+ACI, G/G/c bisection, 3-factor copula, CVaR MILP
+│   ├── k8s/                         # 2D CPU+GiB pod bin-packing & Karpenter v1 NodePool/EC2NodeClass operator
+│   ├── cloud/                       # Multi-region catalogs (us-east-1, eu-west-1, ap-northeast-1) & boto3 adapters
+│   └── api/                         # Hardened FastAPI Control Plane + Executive & Karpenter Simulator UI
+├── infra/
+│   ├── stack.py                     # Production AWS CDK stack (VPC, LaunchTemplate, ASG, DDB, EventBridge)
+│   └── demo_stack.py                # Scale-to-zero AWS Lambda Container + HTTP API custom domain stack
+├── benchmarks/
+│   ├── data/                        # 4 real empirical Numenta NAB AWS/Twitter production CSV traces
+│   ├── run_benchmarks.py            # 7-day multi-storm synthetic stress benchmark
+│   ├── real_trace_benchmark.py      # Full 14-day (4,032-step) real AWS CloudWatch ELB benchmark
+│   └── statistical_rigor.py         # Multi-dataset, 30-seed Wilcoxon, 5-way ablation & scalability suite
+└── tests/                           # 19 automated pytest tests (math theorems, K8s/Karpenter, AppSec, CDK, stats)
+```
 
 ---
 
 ## Quickstart
 
-### Option A: One-Command Docker Launch
 ```bash
+# Option A: Docker
 docker compose up --build
-```
-Then open `http://127.0.0.1:8000` for the **Executive FinOps & Continuity Simulator** or `http://127.0.0.1:8000/docs` for the OpenAPI specification.
 
-### Option B: Local Python Development & Benchmarks
-```bash
+# Option B: Local Python & Full Verification Suite
 python -m venv .venv
-.venv\Scripts\activate   # On Linux/macOS: source .venv/bin/activate
+.venv\Scripts\activate
 pip install -e ".[dev,infra]"
 
-# Run mathematical proofs, FastAPI, real trace, and AWS CDK synthesis tests
 pytest -v
-
-# Run 7-day synthetic multi-storm benchmark
-python benchmarks/run_benchmarks.py
-
-# Run 14-day empirical AWS CloudWatch ELB benchmark
-python benchmarks/real_trace_benchmark.py
-
-# Launch FastAPI Control Plane locally
+python benchmarks/statistical_rigor.py
 uvicorn aegis_scale.api.app:app --port 8000
 ```
 

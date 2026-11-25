@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AegisScale | Executive Cloud FinOps & SLA Continuity Simulator</title>
+  <title>AegisScale | Executive Cloud FinOps & EKS Karpenter Control Plane</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
@@ -24,7 +24,7 @@
       color: var(--text);
       padding: 28px;
     }
-    .container { max-width: 1240px; margin: 0 auto; }
+    .container { max-width: 1260px; margin: 0 auto; }
     header {
       display: flex;
       justify-content: space-between;
@@ -46,7 +46,7 @@
     }
     .grid-controls {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
       gap: 16px;
       background: var(--card);
       border: 1px solid var(--border);
@@ -55,7 +55,7 @@
       margin-bottom: 22px;
     }
     label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 6px; }
-    input[type="number"] {
+    input[type="number"], select {
       width: 100%;
       background: #0f172a;
       border: 1px solid #334155;
@@ -87,6 +87,7 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 18px;
+      margin-bottom: 22px;
     }
     .kpi-label { color: var(--muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.04em; }
     .kpi-value { font-size: 1.9rem; font-weight: 700; margin: 8px 0 4px 0; }
@@ -95,17 +96,28 @@
     table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.92rem; }
     th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--border); }
     th { color: var(--muted); font-weight: 600; }
-    .chart-wrap { height: 320px; margin-top: 12px; }
+    .chart-wrap { height: 300px; margin-top: 12px; }
+    pre {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 14px;
+      color: #a7f3d0;
+      font-size: 0.82rem;
+      max-height: 320px;
+      overflow: auto;
+      margin-top: 12px;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
       <div>
-        <h1>AegisScale Executive FinOps & Continuity Control Plane</h1>
-        <p class="subtitle">Adaptive Conformal Inference + G/G/c Tail-Latency Sizing + Rockafellar-Uryasev CVaR Spot MILP</p>
+        <h1>AegisScale Executive FinOps & EKS Karpenter Control Plane</h1>
+        <p class="subtitle">Adaptive Conformal Inference + 2D G/G/c Tail-Latency Sizing + Rockafellar-Uryasev CVaR Spot MILP</p>
       </div>
-      <div class="badge">HiGHS Global MILP Active</div>
+      <div class="badge">EKS Karpenter v1 + Multi-Region Ready</div>
     </header>
 
     <div class="grid-controls">
@@ -129,24 +141,24 @@
     </div>
 
     <div class="kpis">
-      <div class="card">
+      <div class="card" style="margin-bottom:0;">
         <div class="kpi-label">Annualized Net Compute Savings</div>
         <div id="kpiSavingsUsd" class="kpi-value green">--</div>
         <div id="kpiSavingsPct" class="subtitle">vs. 100% On-Demand Reactive Fleet</div>
       </div>
-      <div class="card">
+      <div class="card" style="margin-bottom:0;">
         <div class="kpi-label">AegisScale SLA Continuity (P99 <= 25ms)</div>
         <div id="kpiAegisSla" class="kpi-value green">--</div>
         <div class="subtitle">During Flash Spikes & Spot Recalls</div>
       </div>
-      <div class="card">
+      <div class="card" style="margin-bottom:0;">
         <div class="kpi-label">Greedy Lowest-Price Spot Continuity</div>
         <div id="kpiGreedySla" class="kpi-value red">--</div>
         <div class="subtitle">Unhedged Single-Pool Spot Exposure</div>
       </div>
     </div>
 
-    <div class="card" style="margin-bottom: 22px;">
+    <div class="card">
       <div class="kpi-label">Executive Strategy Comparison (Annualized Run-Rate & SLA Breaches)</div>
       <table>
         <thead>
@@ -166,6 +178,31 @@
       <div class="chart-wrap">
         <canvas id="costChart"></canvas>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="kpi-label" style="margin-bottom:12px;">Kubernetes & Karpenter v1 Live NodePool Synthesizer (2D CPU + Memory Bin-Packing)</div>
+      <div class="grid-controls" style="margin-bottom:12px; padding:14px;">
+        <div>
+          <label>AWS Region</label>
+          <select id="k8sRegion">
+            <option value="us-east-1">us-east-1 (N. Virginia)</option>
+            <option value="eu-west-1" selected>eu-west-1 (Ireland / Europe)</option>
+            <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
+          </select>
+        </div>
+        <div>
+          <label>Pod CPU Request (vCPU)</label>
+          <input id="podCpu" type="number" value="1.0" min="0.25" max="16.0" step="0.25" />
+        </div>
+        <div>
+          <label>Pod Memory Request (GiB)</label>
+          <input id="podMem" type="number" value="6.5" min="0.5" max="64.0" step="0.5" />
+        </div>
+        <button id="k8sBtn" onclick="reconcileK8s()">Synthesize Karpenter v1</button>
+      </div>
+      <div id="k8sSummary" class="subtitle">--</div>
+      <pre id="k8sManifestOut">Loading Karpenter v1 manifests...</pre>
     </div>
   </div>
 
@@ -240,7 +277,39 @@
         btn.disabled = false;
       }
     }
+
+    async function reconcileK8s() {
+      const btn = document.getElementById('k8sBtn');
+      btn.textContent = 'Solving 2D MILP...';
+      btn.disabled = true;
+      try {
+        const resp = await fetch('/k8s/reconcile', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            region: document.getElementById('k8sRegion').value,
+            observed_rps: parseFloat(document.getElementById('baseRps').value),
+            pod: {
+              name: 'prod-inference-api',
+              cpu_vcpu: parseFloat(document.getElementById('podCpu').value),
+              memory_gib: parseFloat(document.getElementById('podMem').value),
+              target_rps_per_pod: 100.0
+            }
+          })
+        });
+        const res = await resp.json();
+        document.getElementById('k8sSummary').textContent =
+          `Region: ${res.region} | Required Safe Pods: ${res.required_pod_replicas} | Schedulable Slots: ${res.total_schedulable_pods} | Hourly Spend: $${res.hourly_cost_usd} (${res.estimated_savings_pct}% saved vs OD) | Solve: ${res.solve_time_ms} ms`;
+        document.getElementById('k8sManifestOut').textContent =
+          JSON.stringify(res.manifests, null, 2);
+      } finally {
+        btn.textContent = 'Synthesize Karpenter v1';
+        btn.disabled = false;
+      }
+    }
+
     runSimulation();
+    reconcileK8s();
   </script>
 </body>
 </html>
