@@ -6,6 +6,9 @@
 [![Karpenter](https://img.shields.io/badge/EKS_Karpenter-v1_Ready-326CE5.svg)](src/aegis_scale/k8s/karpenter.py)
 [![IaC](https://img.shields.io/badge/AWS_CDK-v2_Verified-FF9900.svg)](infra/stack.py)
 [![Paper](https://img.shields.io/badge/Preprint_Manuscript-PDF-b31b1b.svg)](paper/main.pdf)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-aegis.zenithcodigo.com-10b981.svg)](https://aegis.zenithcodigo.com)
+
+> **Live Interactive Control Plane & Karpenter v1 Simulator:** [https://aegis.zenithcodigo.com](https://aegis.zenithcodigo.com) *(Scale-to-zero AWS Lambda Container + HTTP API in `eu-west-1`)*
 
 **AegisScale** is a trace-validated mathematical control plane for **Amazon EC2** and **Amazon EKS / Kubernetes Karpenter (`karpenter.sh/v1`)** clusters that unifies **strictly causal Adaptive Conformal Inference** (Gibbs & Candes, 2021), **heavy-traffic $G/G/c$ queueing bounds**, **2D `(vCPU, GiB)` container bin-packing**, and **Rockafellar-Uryasev $\text{CVaR}_\beta$ Mixed-Integer Linear Programming** to cut cloud compute bills by **35.0%–37.1% vs. equal-SLA On-Demand** and **17.2%–35.5% vs. a 1-Year AWS Compute Savings Plan + On-Demand baseline** while sustaining **99.0%–100.0% P99 tail-latency SLA continuity**—outperforming reactive HPA (`67.0%–99.8%`), a causal seasonal predictive On-Demand autoscaler (`80.2%–96.5%`), and greedy Spot heuristics (`87.3%–97.3%`).
 
