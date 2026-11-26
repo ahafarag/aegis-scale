@@ -1,10 +1,17 @@
-"""Multi-dataset empirical benchmark, 30-seed statistical rigor, ablation, and sensitivity suite.
+"""Phase 3 Audited Multi-Dataset, Statistical Rigor, Ablation, Sensitivity, and K8s Benchmark Suite.
 
-Evaluates AegisScale across four real public Numenta Anomaly Benchmark (NAB) cloud and
-viral flash-crowd traces with zero per-dataset hyperparameter tuning, performs 30-seed
-Monte Carlo paired Wilcoxon signed-rank hypothesis testing, executes a 5-way architectural
-ablation study, and sweeps AZ recall correlation, Kubernetes node cold-start boot latency,
-and HiGHS MILP solver scalability up to K = 210 candidate pools.
+Evaluates AegisScale with zero per-dataset hyperparameter retuning across five real public
+production traces (four Numenta Anomaly Benchmark traces + the October 2024 Microsoft Azure
+Public Dataset Multimodal LLM Inference trace):
+  - Experiment A: Multi-dataset generalization across 6 strategies (including 1-Yr AWS Compute
+    Savings Plan baseline and fair AWS 2-min Spot warning reaction for Static 30/70 Mixed).
+  - Experiment B: 30 disjoint real-world rolling windows (6 per dataset x 5 datasets) with
+    exact Student-t 95% confidence intervals and two-sided paired Wilcoxon signed-rank tests.
+  - Experiment C: Strictly unconfounded 6-way architectural ablation (one variable changed per row).
+  - Experiment D: AZ correlation sweep, true 1-minute (dt=60s) node cold-start sweep with
+    recalled-Spot eviction, Spot price multiplier sensitivity (0.7x-1.6x), and HiGHS scalability.
+  - Experiment E: Empirical 2D (vCPU, GiB) Kubernetes/Karpenter benchmark across us-east-1,
+    eu-west-1, and ap-northeast-1 using K8sAegisOperator and build_2d_effective_pools.
 
 Usage:
     .venv\\Scripts\\python.exe benchmarks/statistical_rigor.py
@@ -29,6 +36,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.stats import t as student_t
 from scipy.stats import wilcoxon
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,20 +46,28 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aegis_scale.cloud.aws_catalog import default_us_east_1_pools
+from aegis_scale.cloud.multi_region import SUPPORTED_REGIONS, get_region_pools
 from aegis_scale.config import ComputePool, SLAPolicy
 from aegis_scale.engine import AegisScaleEngine
+from aegis_scale.k8s.bin_packing import K8sClusterOverhead, PodResources, pods_per_node
+from aegis_scale.k8s.karpenter import K8sAegisOperator
 from aegis_scale.math_core.conformal import AdaptiveConformalPredictor
 from aegis_scale.math_core.cvar_milp import CVaRPortfolioOptimizer
 from aegis_scale.math_core.hazard_copula import CorrelatedSpotHazardModel
 from aegis_scale.math_core.queuing import ggc_quantile_wait_seconds, required_safe_vcpus
 
 DATA_DIR = ROOT / "benchmarks" / "data"
-DEFAULT_OUTPUT_JSON = ROOT / "output" / "phase2_statistical_results.json"
+DEFAULT_OUTPUT_JSON = ROOT / "output" / "phase3_audited_results.json"
 DEFAULT_FIGURES_DIR = ROOT / "docs" / "figures"
+
+# 1-Year No-Upfront AWS Compute Savings Plan discount (~32% off On-Demand on committed base)
+SAVINGS_PLAN_DISCOUNT = 0.32
+HTTP_GATEWAY_TIMEOUT_MS = 5000.0
 
 STRATEGY_NAMES = [
     "Reactive_HPA_55",
     "IsoSLA_100_OnDemand",
+    "OD_SavingsPlan_IsoSLA",
     "Greedy_Cheapest_Spot",
     "Static_30_70_Mixed",
     "AegisScale_Full",
@@ -63,12 +79,13 @@ ABLATION_NAMES = [
     "Ablation_Static_Conformal",
     "Ablation_No_GGc",
     "Ablation_Uncorrelated_Spot",
+    "Ablation_No_Spot_Warnings",
 ]
 
 
 @dataclass(frozen=True)
 class DatasetSpec:
-    """Metadata and deterministic window alignment for a real empirical NAB trace."""
+    """Metadata and deterministic window alignment for a real empirical trace."""
 
     name: str
     filename: str
@@ -106,6 +123,13 @@ DATASET_SPECS: list[DatasetSpec] = [
         start_offset_full=12600,
         start_offset_fast=13060,
     ),
+    DatasetSpec(
+        name="Azure-LLM-Inference-2024",
+        filename="real_azure_inference_2024.csv",
+        description="Microsoft Azure Public Dataset Oct 2024 Multimodal LLM Inference (1M requests, 5-min bins)",
+        start_offset_full=0,
+        start_offset_fast=0,
+    ),
 ]
 
 
@@ -127,8 +151,13 @@ def load_empirical_trace(
     scale_to_mean_rps: float = 3200.0,
     max_steps: int = 600,
     start_offset: int = 0,
+    causal_warmup_steps: int = 60,
 ) -> tuple[list[str], np.ndarray, int]:
-    """Load a contiguous slice of a real NAB CSV trace and normalize to target mean RPS."""
+    """Load a contiguous slice of a real CSV trace using strictly causal prefix normalization.
+
+    Normalizes raw telemetry using ONLY the initial warmup prefix mean (`arr[:warmup]`) so
+    no future demand statistics leak into earlier steps.
+    """
     all_timestamps: list[str] = []
     all_values: list[float] = []
     with csv_path.open("r", encoding="utf-8") as handle:
@@ -148,41 +177,44 @@ def load_empirical_trace(
     effective_start = max(0, min(start_offset, max(0, total_rows - max_steps)))
     sliced_ts = all_timestamps[effective_start : effective_start + max_steps]
     arr = np.asarray(all_values[effective_start : effective_start + max_steps], dtype=np.float64)
-    emp_mean = float(np.mean(arr))
-    scaled = arr * (scale_to_mean_rps / max(emp_mean, 1e-9))
+    warmup_len = max(1, min(causal_warmup_steps, len(arr)))
+    causal_prefix_mean = float(np.mean(arr[:warmup_len]))
+    scaled = arr * (scale_to_mean_rps / max(causal_prefix_mean, 1e-9))
     return sliced_ts, scaled, total_rows
 
 
-def _build_storm_schedule(
-    rps_trace: np.ndarray,
+def resample_5min_to_1min(trace_5min: np.ndarray) -> np.ndarray:
+    """Linearly interpolate a 5-minute trace to exact 1-minute (60s) resolution."""
+    n5 = len(trace_5min)
+    if n5 <= 1:
+        return trace_5min.copy()
+    x_old = np.arange(n5, dtype=np.float64) * 5.0
+    x_new = np.arange((n5 - 1) * 5 + 1, dtype=np.float64)
+    return np.interp(x_new, x_old, trace_5min)
+
+
+def _build_exogenous_storm_schedule(
+    n_steps: int,
     seed: int,
 ) -> list[tuple[int, int, str, str, set[str]]]:
-    """Build correlated regional AZ + compute-family Spot recall storms aligned with demand peaks."""
+    """Generate correlated regional AZ + family Spot recall storms INDEPENDENTLY of future RPS."""
     rng = np.random.default_rng(seed)
-    n_steps = len(rps_trace)
     az_choices = ["us-east-1a", "us-east-1b", "us-east-1c"]
     storm_fams = {"c6a", "c7g", "m6a"}
 
-    search_start = min(18, max(2, n_steps // 5))
-    candidate_indices = list(np.argsort(-rps_trace[search_start:]) + search_start)
     target_count = 2 if n_steps <= 120 else 3
-    min_gap = max(12, n_steps // (target_count + 2))
-
-    chosen_peaks: list[int] = []
-    for idx in candidate_indices:
-        c_idx = int(idx)
-        if all(abs(c_idx - prev) >= min_gap for prev in chosen_peaks):
-            chosen_peaks.append(c_idx)
-            if len(chosen_peaks) >= target_count:
-                break
-    chosen_peaks.sort()
+    usable_start = max(12, n_steps // 8)
+    usable_end = max(usable_start + 10, n_steps - max(8, n_steps // 12))
+    segment = max(12, (usable_end - usable_start) // target_count)
+    half_w = 4 if n_steps <= 120 else 7
 
     storms: list[tuple[int, int, str, str, set[str]]] = []
-    half_w = 4 if n_steps <= 120 else 7
-    for s_i, pk in enumerate(chosen_peaks):
-        jitter = int(rng.integers(-1, 2))
-        s_start = max(2, pk - half_w + jitter)
-        s_end = min(n_steps - 1, pk + half_w + jitter)
+    for s_i in range(target_count):
+        seg_lo = usable_start + s_i * segment
+        seg_hi = min(usable_end, seg_lo + segment - 1)
+        center = int(rng.integers(seg_lo, max(seg_lo + 1, seg_hi)))
+        s_start = max(2, center - half_w)
+        s_end = min(n_steps - 1, center + half_w)
         az1 = az_choices[(seed + s_i) % len(az_choices)]
         az2 = az_choices[(seed + s_i + 1) % len(az_choices)]
         storms.append((s_start, s_end, az1, az2, storm_fams))
@@ -196,13 +228,10 @@ def _apply_boot_delay(
     step: int,
     boot_delay_steps: int,
     all_pool_ids: list[str],
+    recalled_ids: set[str] | None = None,
+    pool_map: dict[str, ComputePool] | None = None,
 ) -> tuple[dict[str, int], dict[str, int]]:
-    """Advance Kubernetes node boot queue by one step and return (ready_alloc, billed_alloc).
-
-    Newly requested instances enter pending_queues with ready_step = step + boot_delay_steps
-    and cannot serve requests until ready_step, while scale-downs cancel newest pending
-    launches first before terminating active nodes.
-    """
+    """Advance node boot queues by one step and evict recalled Spot nodes from ready_alloc."""
     if boot_delay_steps <= 0 or step == 0:
         ready_now = {pid: int(target_alloc.get(pid, 0)) for pid in all_pool_ids if target_alloc.get(pid, 0) > 0}
         ready_alloc.clear()
@@ -251,41 +280,85 @@ def _apply_boot_delay(
         if tot_billed > 0:
             billed_now[pid] = tot_billed
 
-    return dict(ready_alloc), billed_now
+    snapshot_ready = dict(ready_alloc)
+
+    # Evict interrupted Spot instances from ready_alloc AFTER evaluating this step's survival
+    # so replacement launches in step t+1 must genuinely pass through pending_queues.
+    if recalled_ids and pool_map:
+        for pid in recalled_ids:
+            if pid in pool_map and pool_map[pid].market == "spot":
+                ready_alloc.pop(pid, None)
+                pending_queues[pid] = []
+
+    return snapshot_ready, billed_now
 
 
-def _evaluate_five_strategies_trajectory(
+def _scale_spot_prices(pools: list[ComputePool], spot_price_mult: float) -> list[ComputePool]:
+    """Scale hourly prices of Spot pools and ensure generous enterprise EC2 quotas for viral spikes."""
+    out: list[ComputePool] = []
+    for p in pools:
+        if p.market == "spot":
+            out.append(
+                p.model_copy(
+                    update={
+                        "hourly_price_usd": round(p.hourly_price_usd * spot_price_mult, 6),
+                        "max_instances": max(p.max_instances, 600),
+                    }
+                )
+            )
+        else:
+            out.append(p.model_copy(update={"max_instances": max(p.max_instances, 2500)}))
+    return out
+
+
+def _evaluate_strategies_trajectory(
     rps_trace: np.ndarray,
     policy: SLAPolicy,
     seed: int,
     env_az_corr: float = 0.55,
     env_fam_corr: float = 0.40,
     boot_delay_steps: int = 0,
+    dt_hours: float = 5.0 / 60.0,
+    spot_price_mult: float = 1.0,
     record_coldstart_only: bool = False,
 ) -> dict[str, Any]:
-    """Simulate all 5 provisioning strategies on a given RPS trace and Spot recall realization."""
-    pools = default_us_east_1_pools()
+    """Simulate all provisioning strategies on a real RPS trace and exogenous Spot recalls."""
+    pools = _scale_spot_prices(default_us_east_1_pools(), spot_price_mult)
     pool_map = {p.pool_id: p for p in pools}
     all_pids = [p.pool_id for p in pools]
     n_steps = len(rps_trace)
-    dt_hours = 5.0 / 60.0
 
     engine = AegisScaleEngine(pools=pools, policy=policy, seed=seed)
     copula = CorrelatedSpotHazardModel(az_correlation=env_az_corr, family_correlation=env_fam_corr)
     realized_draws = copula.sample_scenarios(pools=pools, num_scenarios=n_steps, seed=seed + 503)
-    storms = _build_storm_schedule(rps_trace=rps_trace, seed=seed + 19)
+    storms = _build_exogenous_storm_schedule(n_steps=n_steps, seed=seed + 19)
 
     od_sorted = sorted((p for p in pools if p.market == "on-demand"), key=lambda p: p.hourly_price_usd / p.vcpu)
     cheapest_od = od_sorted[0]
     spot_sorted = sorted((p for p in pools if p.market == "spot"), key=lambda p: p.hourly_price_usd / p.vcpu)
     cheapest_spot = spot_sorted[0]
-    top6_spot = spot_sorted[:6]
+
+    # Causal 1-Year Compute Savings Plan hourly commitment: 30th percentile of initial warmup window
+    warmup_len = max(5, min(60, n_steps // 4))
+    sp_base_rps = float(np.quantile(rps_trace[:warmup_len], 0.30))
+    sp_base_vcpu = required_safe_vcpus(
+        sp_base_rps,
+        policy.per_vcpu_rps_capacity,
+        policy.p99_queue_delay_sla_ms,
+        0.99,
+        policy.arrival_cv2,
+        policy.service_cv2,
+    )
+    sp_committed_od_nodes = max(1, int(math.ceil(sp_base_vcpu / cheapest_od.vcpu)))
+    sp_committed_hourly_od_equiv = sp_committed_od_nodes * cheapest_od.hourly_price_usd
 
     active_strats = ["Reactive_HPA_55", "AegisScale_Full"] if record_coldstart_only else STRATEGY_NAMES
     costs = {s: 0.0 for s in active_strats}
     breaches = {s: 0 for s in active_strats}
     storm_breaches = {s: 0 for s in active_strats}
-    p99_waits: dict[str, list[float]] = {s: [] for s in active_strats}
+    unstable_steps = {s: 0 for s in active_strats}
+    p99_waits_capped: dict[str, list[float]] = {s: [] for s in active_strats}
+    p99_waits_finite: dict[str, list[float]] = {s: [] for s in active_strats}
     solve_ms: list[float] = []
 
     ready_state: dict[str, dict[str, int]] = {s: {} for s in active_strats}
@@ -302,6 +375,7 @@ def _evaluate_five_strategies_trajectory(
         }
 
         storm_active = False
+        warned_spot_ids: set[str] = set()
         engine.clear_pool_warnings()
         for s_start, s_end, target_az1, target_az2, target_fams in storms:
             if s_start <= t <= s_end:
@@ -312,6 +386,7 @@ def _evaluate_five_strategies_trajectory(
                         or (p.az == target_az2 and p.family in {"c6a", "c7g"})
                     ):
                         recalled_ids.add(p.pool_id)
+                        warned_spot_ids.add(p.pool_id)
                         engine.flag_pool_preemption_warning(p.instance_type, p.az, elevated_prob=0.98)
 
         report = engine.run_cycle(observed_rps=prev_rps)
@@ -344,12 +419,15 @@ def _evaluate_five_strategies_trajectory(
             gr_sp = max(0, int(math.ceil(0.90 * safe_vcpu / cheapest_spot.vcpu)))
             alloc_greedy = {cheapest_od.pool_id: gr_od, cheapest_spot.pool_id: gr_sp}
 
+            # Fair AWS 2-min warning reaction for Static 30/70 Mixed: filter out warned Spot pools
+            healthy_spot = [p for p in spot_sorted if p.pool_id not in warned_spot_ids]
+            top6_healthy = (healthy_spot if healthy_spot else spot_sorted)[:6]
             st_od = max(1, int(math.ceil(0.30 * safe_vcpu / cheapest_od.vcpu)))
             rem = max(0.0, safe_vcpu - st_od * cheapest_od.vcpu)
             total_spot_inst = int(math.ceil(rem / 4.0))
-            base_cnt, extra_cnt = divmod(total_spot_inst, len(top6_spot))
+            base_cnt, extra_cnt = divmod(total_spot_inst, len(top6_healthy))
             alloc_static = {cheapest_od.pool_id: st_od}
-            for idx_sp, sp in enumerate(top6_spot):
+            for idx_sp, sp in enumerate(top6_healthy):
                 cnt = base_cnt + (1 if idx_sp < extra_cnt else 0)
                 if cnt > 0:
                     alloc_static[sp.pool_id] = cnt
@@ -357,6 +435,7 @@ def _evaluate_five_strategies_trajectory(
             target_by_strat = {
                 "Reactive_HPA_55": alloc_reactive,
                 "IsoSLA_100_OnDemand": alloc_isosla_od,
+                "OD_SavingsPlan_IsoSLA": alloc_isosla_od,
                 "Greedy_Cheapest_Spot": alloc_greedy,
                 "Static_30_70_Mixed": alloc_static,
                 "AegisScale_Full": alloc_aegis,
@@ -370,8 +449,19 @@ def _evaluate_five_strategies_trajectory(
                 step=t,
                 boot_delay_steps=boot_delay_steps,
                 all_pool_ids=all_pids,
+                recalled_ids=recalled_ids,
+                pool_map=pool_map,
             )
-            h_cost = sum(pool_map[pid].hourly_price_usd * c for pid, c in billed_alloc.items() if c > 0)
+            raw_h_cost = sum(pool_map[pid].hourly_price_usd * c for pid, c in billed_alloc.items() if c > 0)
+            if s_name == "OD_SavingsPlan_IsoSLA":
+                # Committed 1-Yr Savings Plan covers up to sp_committed_hourly_od_equiv at (1 - discount),
+                # billed continuously even if utilization dips below commitment; bursts billed at OD rate.
+                sp_covered = sp_committed_hourly_od_equiv * (1.0 - SAVINGS_PLAN_DISCOUNT)
+                od_burst = max(0.0, raw_h_cost - sp_committed_hourly_od_equiv)
+                h_cost = sp_covered + od_burst
+            else:
+                h_cost = raw_h_cost
+
             surv_vcpu = sum(
                 pool_map[pid].vcpu * c
                 for pid, c in ready_alloc.items()
@@ -385,10 +475,15 @@ def _evaluate_five_strategies_trajectory(
                 arrival_cv2=policy.arrival_cv2,
                 service_cv2=policy.service_cv2,
             )
-            w_ms = min(5000.0, w_sec * 1000.0) if math.isfinite(w_sec) else 5000.0
-            p99_waits[s_name].append(w_ms)
+            if math.isfinite(w_sec):
+                w_ms = min(HTTP_GATEWAY_TIMEOUT_MS, w_sec * 1000.0)
+                p99_waits_finite[s_name].append(w_ms)
+            else:
+                w_ms = HTTP_GATEWAY_TIMEOUT_MS
+                unstable_steps[s_name] += 1
+            p99_waits_capped[s_name].append(w_ms)
             costs[s_name] += h_cost * dt_hours
-            if w_sec * 1000.0 > policy.p99_queue_delay_sla_ms:
+            if (not math.isfinite(w_sec)) or (w_sec * 1000.0 > policy.p99_queue_delay_sla_ms):
                 breaches[s_name] += 1
                 if storm_active:
                     storm_breaches[s_name] += 1
@@ -398,19 +493,25 @@ def _evaluate_five_strategies_trajectory(
     total_hours = n_steps * dt_hours
     annual_mult = (24.0 * 365.0) / total_hours
     isosla_cost = costs.get("IsoSLA_100_OnDemand", 0.0)
+    sp_cost = costs.get("OD_SavingsPlan_IsoSLA", 0.0)
 
     out_strats: dict[str, dict[str, float | int]] = {}
     for s_name in active_strats:
         c_val = costs[s_name]
-        sav_pct = ((isosla_cost - c_val) / isosla_cost * 100.0) if isosla_cost > 0 else 0.0
+        sav_od = ((isosla_cost - c_val) / isosla_cost * 100.0) if isosla_cost > 0 else 0.0
+        sav_sp = ((sp_cost - c_val) / sp_cost * 100.0) if sp_cost > 0 else 0.0
+        finite_arr = p99_waits_finite[s_name]
         out_strats[s_name] = {
             "period_cost_usd": round(c_val, 2),
             "annualized_cost_usd": round(c_val * annual_mult, 2),
-            "savings_vs_isosla_od_pct": round(sav_pct, 2),
+            "savings_vs_isosla_od_pct": round(sav_od, 2),
+            "savings_vs_savings_plan_pct": round(sav_sp, 2),
             "sla_continuity_pct": round((1.0 - breaches[s_name] / n_steps) * 100.0, 2),
             "total_sla_breaches": int(breaches[s_name]),
             "spot_storm_sla_breaches": int(storm_breaches[s_name]),
-            "mean_realized_p99_wait_ms": round(float(np.mean(p99_waits[s_name])), 3),
+            "unstable_interval_pct": round((unstable_steps[s_name] / n_steps) * 100.0, 2),
+            "mean_realized_p99_wait_ms": round(float(np.mean(p99_waits_capped[s_name])), 3),
+            "mean_finite_p99_wait_ms": round(float(np.mean(finite_arr)) if finite_arr else HTTP_GATEWAY_TIMEOUT_MS, 3),
         }
 
     out_strats["AegisScale_Full"]["median_milp_solve_ms"] = round(float(np.median(solve_ms)), 3)
@@ -427,7 +528,7 @@ def _run_ablation_variant(
     base_policy: SLAPolicy,
     seed: int = 404,
 ) -> dict[str, float | int]:
-    """Run one of the 5 architectural ablation variants on an empirical RPS trace."""
+    """Run one of the 6 strictly unconfounded architectural ablation variants (1 change per row)."""
     pools = default_us_east_1_pools()
     pool_map = {p.pool_id: p for p in pools}
     n_steps = len(rps_trace)
@@ -436,12 +537,12 @@ def _run_ablation_variant(
     if variant_name == "Ablation_Static_Conformal":
         pol = base_policy.model_copy(update={"aci_gamma": 1e-9})
     elif variant_name == "Ablation_Uncorrelated_Spot":
+        # Strictly disable copula correlation & pool-share cap ONLY; preserve OD floor & warnings!
         pol = base_policy.model_copy(
             update={
                 "az_correlation": 0.0,
                 "family_correlation": 0.0,
                 "max_spot_pool_share": 1.0,
-                "on_demand_floor_ratio": 0.10,
             }
         )
     else:
@@ -460,7 +561,7 @@ def _run_ablation_variant(
 
     env_copula = CorrelatedSpotHazardModel(az_correlation=0.55, family_correlation=0.40)
     realized_draws = env_copula.sample_scenarios(pools=pools, num_scenarios=n_steps, seed=seed + 503)
-    storms = _build_storm_schedule(rps_trace=rps_trace, seed=seed + 19)
+    storms = _build_exogenous_storm_schedule(n_steps=n_steps, seed=seed + 19)
 
     current_alloc: dict[str, int] | None = None
     elevated_hazards: dict[str, float] = {}
@@ -487,19 +588,17 @@ def _run_ablation_variant(
                         or (p.az == target_az2 and p.family in {"c6a", "c7g"})
                     ):
                         recalled_ids.add(p.pool_id)
-                        if variant_name != "Ablation_Uncorrelated_Spot":
+                        if variant_name != "Ablation_No_Spot_Warnings":
                             elevated_hazards[p.pool_id] = 0.98
 
-        conformal_res = predictor.step(prev_rps)
+        predictor.step(prev_rps)
         next_point, next_upper = predictor.predict_upper_bound()
 
         if variant_name == "Ablation_No_ACI":
-            design_rps = max(1.0, conformal_res.point_forecast * 1.05, next_point * 1.05)
-        elif variant_name == "Ablation_Static_Conformal":
-            # Static split/sliding conformal quantile without online alpha_t update or max-envelope guard
-            design_rps = max(1.0, next_upper)
+            design_rps = max(1.0, next_point * 1.05)
         else:
-            design_rps = max(conformal_res.upper_bound, next_upper, prev_rps)
+            # Identical design_rps formula across Full, Static Conformal, No GGc, Uncorrelated, No Warnings
+            design_rps = max(next_upper, prev_rps)
 
         if variant_name == "Ablation_No_GGc":
             c_req = max(1.0, design_rps / (0.85 * pol.per_vcpu_rps_capacity))
@@ -542,7 +641,7 @@ def _run_ablation_variant(
             service_cv2=pol.service_cv2,
         )
         total_cost += h_cost * dt_hours
-        if w_sec * 1000.0 > pol.p99_queue_delay_sla_ms:
+        if (not math.isfinite(w_sec)) or (w_sec * 1000.0 > pol.p99_queue_delay_sla_ms):
             breaches += 1
             if storm_active:
                 storm_breaches += 1
@@ -571,7 +670,7 @@ def _worker_dataset_task(args: tuple[DatasetSpec, int, int]) -> tuple[str, dict[
         start_offset=offset,
     )
     policy = default_publication_policy(num_scenarios=num_scenarios)
-    strat_metrics = _evaluate_five_strategies_trajectory(
+    strat_metrics = _evaluate_strategies_trajectory(
         rps_trace=rps_trace,
         policy=policy,
         seed=404,
@@ -581,6 +680,7 @@ def _worker_dataset_task(args: tuple[DatasetSpec, int, int]) -> tuple[str, dict[
             "csv_file": spec.filename,
             "description": spec.description,
             "total_csv_rows": total_rows,
+            "start_offset": offset,
             "evaluated_steps": len(rps_trace),
             "start_timestamp": timestamps[0],
             "end_timestamp": timestamps[-1],
@@ -592,23 +692,20 @@ def _worker_dataset_task(args: tuple[DatasetSpec, int, int]) -> tuple[str, dict[
     }
 
 
-def _worker_mc_seed_task(args: tuple[np.ndarray, int, int]) -> dict[str, dict[str, float | int]]:
-    """Worker entrypoint for Experiment B single Monte Carlo seed trajectory."""
-    base_elb_trace, seed_idx, num_scenarios = args
-    seed = 1000 + seed_idx * 97
-    rng = np.random.default_rng(seed)
-    n_steps = len(base_elb_trace)
-
-    # Independent heavy-tailed micro-burst modulation around the real AWS ELB trace
-    burst_mult = rng.lognormal(mean=0.0, sigma=0.085, size=n_steps)
-    spike_pos = int(rng.integers(max(10, n_steps // 5), max(15, n_steps - 10)))
-    burst_mult[spike_pos : min(n_steps, spike_pos + 3)] *= float(rng.uniform(1.55, 1.95))
-    perturbed = base_elb_trace * burst_mult
-    perturbed = perturbed * (3200.0 / float(np.mean(perturbed)))
-
+def _worker_rolling_window_task(
+    args: tuple[DatasetSpec, int, int, int, int],
+) -> dict[str, dict[str, float | int]]:
+    """Worker entrypoint for Experiment B disjoint real rolling-window evaluation."""
+    spec, start_offset, window_steps, seed, num_scenarios = args
+    _, rps_trace, _ = load_empirical_trace(
+        csv_path=DATA_DIR / spec.filename,
+        scale_to_mean_rps=3200.0,
+        max_steps=window_steps,
+        start_offset=start_offset,
+    )
     policy = default_publication_policy(num_scenarios=num_scenarios)
-    return _evaluate_five_strategies_trajectory(
-        rps_trace=perturbed,
+    return _evaluate_strategies_trajectory(
+        rps_trace=rps_trace,
         policy=policy,
         seed=seed,
     )
@@ -634,7 +731,7 @@ def _worker_az_corr_task(args: tuple[float, np.ndarray, int]) -> tuple[float, di
     policy = default_publication_policy(num_scenarios=num_scenarios).model_copy(
         update={"az_correlation": rho_az, "family_correlation": rho_fam}
     )
-    res = _evaluate_five_strategies_trajectory(
+    res = _evaluate_strategies_trajectory(
         rps_trace=elb_trace,
         policy=policy,
         seed=404,
@@ -655,22 +752,172 @@ def _worker_az_corr_task(args: tuple[float, np.ndarray, int]) -> tuple[float, di
 
 
 def _worker_coldstart_task(args: tuple[int, np.ndarray, int]) -> tuple[int, dict[str, Any]]:
-    """Worker entrypoint for Experiment D Kubernetes node cold-start delay point."""
-    boot_delay, elb_trace, num_scenarios = args
+    """Worker entrypoint for Experiment D TRUE 1-minute (dt=60s) node cold-start delay sweep."""
+    boot_delay_min, elb_1min_trace, num_scenarios = args
     policy = default_publication_policy(num_scenarios=num_scenarios)
-    res = _evaluate_five_strategies_trajectory(
-        rps_trace=elb_trace,
+    res = _evaluate_strategies_trajectory(
+        rps_trace=elb_1min_trace,
         policy=policy,
         seed=404,
-        boot_delay_steps=boot_delay,
+        boot_delay_steps=boot_delay_min,
+        dt_hours=1.0 / 60.0,
         record_coldstart_only=True,
     )
-    return boot_delay, {
-        "boot_delay_steps": boot_delay,
-        "boot_delay_seconds": boot_delay * 60,
+    return boot_delay_min, {
+        "boot_delay_steps": boot_delay_min,
+        "step_resolution_seconds": 60,
+        "boot_delay_seconds": boot_delay_min * 60,
         "AegisScale_Full": res["AegisScale_Full"],
         "Reactive_HPA_55": res["Reactive_HPA_55"],
     }
+
+
+def _worker_spot_price_task(args: tuple[str, float, np.ndarray, int]) -> tuple[str, float, dict[str, Any]]:
+    """Worker entrypoint for Experiment D Spot price multiplier sensitivity (0.7x - 1.6x)."""
+    ds_name, mult, trace, num_scenarios = args
+    policy = default_publication_policy(num_scenarios=num_scenarios)
+    res = _evaluate_strategies_trajectory(
+        rps_trace=trace,
+        policy=policy,
+        seed=404,
+        spot_price_mult=mult,
+    )
+    return ds_name, mult, {
+        "spot_price_multiplier": mult,
+        "AegisScale_annualized_cost_usd": res["AegisScale_Full"]["annualized_cost_usd"],
+        "IsoSLA_OD_annualized_cost_usd": res["IsoSLA_100_OnDemand"]["annualized_cost_usd"],
+        "SavingsPlan_annualized_cost_usd": res["OD_SavingsPlan_IsoSLA"]["annualized_cost_usd"],
+        "savings_vs_isosla_od_pct": res["AegisScale_Full"]["savings_vs_isosla_od_pct"],
+        "savings_vs_savings_plan_pct": res["AegisScale_Full"]["savings_vs_savings_plan_pct"],
+        "sla_continuity_pct": res["AegisScale_Full"]["sla_continuity_pct"],
+    }
+
+
+def run_k8s_2d_multiregion_benchmark(
+    azure_trace: np.ndarray,
+    num_scenarios: int = 120,
+) -> dict[str, Any]:
+    """Experiment E: Empirical 2D (vCPU, GiB) Kubernetes/Karpenter benchmark across 3 AWS regions.
+
+    Evaluates a memory-heavy inference pod (1 vCPU, 7 GiB, 40 RPS/pod) across us-east-1,
+    eu-west-1, and ap-northeast-1, comparing:
+      1. 1D CPU-Only AegisScale (ignores memory bin-packing, picks cheapest $/vCPU nodes like c6a/c7g)
+      2. Karpenter-Style Greedy Spot (2D-aware cheapest Spot node without CVaR hedging)
+      3. AegisScale 2D K8s Operator (K8sAegisOperator + build_2d_effective_pools + KarpenterReconciler)
+    """
+    pod = PodResources(name="llm-inference-api", cpu_vcpu=1.0, memory_gib=7.0, target_rps_per_pod=40.0)
+    overhead = K8sClusterOverhead(daemonset_cpu_vcpu=0.25, daemonset_memory_gib=0.75, node_boot_seconds=65.0)
+    policy = default_publication_policy(num_scenarios=num_scenarios)
+    n_steps = len(azure_trace)
+    dt_hours = 5.0 / 60.0
+
+    region_results: dict[str, Any] = {}
+    for region in SUPPORTED_REGIONS:
+        pools = get_region_pools(region)
+        pool_map = {p.pool_id: p for p in pools}
+        copula = CorrelatedSpotHazardModel(az_correlation=0.55, family_correlation=0.40)
+        realized_draws = copula.sample_scenarios(pools=pools, num_scenarios=n_steps, seed=808)
+
+        # 2D Operator (full AegisScale K8s stack)
+        op_2d = K8sAegisOperator(
+            pools=pools,
+            pod=pod,
+            policy=policy,
+            overhead=overhead,
+            interval_sec=300.0,
+            seed=404,
+        )
+
+        # 1D CPU-only naive allocator (uses cheapest $/vCPU pools, e.g. c6a/c7g 4 vCPU / 8 GiB -> only 1 pod fits!)
+        od_cheapest_1d = min((p for p in pools if p.market == "on-demand"), key=lambda p: p.hourly_price_usd / p.vcpu)
+        spot_cheapest_1d = min((p for p in pools if p.market == "spot"), key=lambda p: p.hourly_price_usd / p.vcpu)
+        # 2D-aware greedy Karpenter Spot (cheapest $/pod-slot Spot pool, 10% OD anchor)
+        schedulable_od = [p for p in pools if p.market == "on-demand" and pods_per_node(p, pod, overhead) >= 1]
+        schedulable_spot = [p for p in pools if p.market == "spot" and pods_per_node(p, pod, overhead) >= 1]
+        od_2d_best = min(schedulable_od, key=lambda p: p.hourly_price_usd / pods_per_node(p, pod, overhead))
+        spot_2d_best = min(schedulable_spot, key=lambda p: p.hourly_price_usd / pods_per_node(p, pod, overhead))
+
+        costs = {"1D_CPU_Only_Mixed": 0.0, "Karpenter_Greedy_2D_Spot": 0.0, "AegisScale_2D_Karpenter": 0.0}
+        breaches = {k: 0 for k in costs}
+        stranded_vcpu_ratios: dict[str, list[float]] = {k: [] for k in costs}
+        manifest_counts = 0
+
+        prev_rps = float(azure_trace[0])
+        for t in range(n_steps):
+            true_rps = float(azure_trace[t])
+            recalled_ids = {
+                pools[k].pool_id
+                for k in range(len(pools))
+                if pools[k].market == "spot" and realized_draws[t, k] > 0.5
+            }
+
+            report_2d = op_2d.run_cycle(observed_rps=prev_rps)
+            req_pods = report_2d.required_pod_replicas
+            if t == n_steps - 1:
+                manifest_counts = len(report_2d.manifests.node_pools) + 2
+
+            # 1D CPU-only allocator assumes 4 vCPU node fits 3 pods (by CPU), ignoring 7 GiB memory limit
+            # Realized schedulable pods on c7g.xlarge (4 vCPU, 8 GiB) is only 1 pod -> massive stranding/OOM
+            od_1d_nodes = max(1, int(math.ceil(0.30 * req_pods / 3.0)))
+            sp_1d_nodes = max(0, int(math.ceil(0.70 * req_pods / 3.0)))
+            alloc_1d = {od_cheapest_1d.pool_id: od_1d_nodes, spot_cheapest_1d.pool_id: sp_1d_nodes}
+
+            # Karpenter 2D Greedy Spot (10% best 2D OD, 90% single cheapest 2D Spot pool)
+            od_2d_cap = pods_per_node(od_2d_best, pod, overhead)
+            sp_2d_cap = pods_per_node(spot_2d_best, pod, overhead)
+            alloc_karp_greedy = {
+                od_2d_best.pool_id: max(1, int(math.ceil(0.10 * req_pods / od_2d_cap))),
+                spot_2d_best.pool_id: max(0, int(math.ceil(0.90 * req_pods / sp_2d_cap))),
+            }
+
+            alloc_aegis_2d = report_2d.portfolio.allocations
+
+            for label, alloc in [
+                ("1D_CPU_Only_Mixed", alloc_1d),
+                ("Karpenter_Greedy_2D_Spot", alloc_karp_greedy),
+                ("AegisScale_2D_Karpenter", alloc_aegis_2d),
+            ]:
+                h_cost = sum(pool_map[pid].hourly_price_usd * c for pid, c in alloc.items() if c > 0)
+                costs[label] += h_cost * dt_hours
+
+                total_vcpu = sum(pool_map[pid].vcpu * c for pid, c in alloc.items() if c > 0)
+                total_pods = sum(pods_per_node(pool_map[pid], pod, overhead) * c for pid, c in alloc.items() if c > 0)
+                used_vcpu = total_pods * pod.cpu_vcpu
+                stranded_vcpu_ratios[label].append(max(0.0, 1.0 - used_vcpu / max(1e-9, total_vcpu)) * 100.0)
+
+                surv_pods = sum(
+                    pods_per_node(pool_map[pid], pod, overhead) * c
+                    for pid, c in alloc.items()
+                    if c > 0 and (pool_map[pid].market == "on-demand" or pid not in recalled_ids)
+                )
+                w_sec = ggc_quantile_wait_seconds(
+                    arrival_rate_rps=true_rps,
+                    vcpus=float(surv_pods),
+                    per_vcpu_mu=pod.target_rps_per_pod,
+                    quantile=0.99,
+                    arrival_cv2=policy.arrival_cv2,
+                    service_cv2=policy.service_cv2,
+                )
+                if (not math.isfinite(w_sec)) or (w_sec * 1000.0 > policy.p99_queue_delay_sla_ms):
+                    breaches[label] += 1
+
+            prev_rps = true_rps
+
+        annual_mult = (24.0 * 365.0) / (n_steps * dt_hours)
+        region_results[region] = {
+            "pod_spec": {"cpu_vcpu": pod.cpu_vcpu, "memory_gib": pod.memory_gib, "target_rps_per_pod": pod.target_rps_per_pod},
+            "karpenter_manifests_emitted": manifest_counts,
+            "strategies": {
+                label: {
+                    "annualized_cost_usd": round(costs[label] * annual_mult, 2),
+                    "sla_continuity_pct": round((1.0 - breaches[label] / n_steps) * 100.0, 2),
+                    "total_sla_breaches": int(breaches[label]),
+                    "mean_stranded_vcpu_pct": round(float(np.mean(stranded_vcpu_ratios[label])), 2),
+                }
+                for label in costs
+            },
+        }
+    return region_results
 
 
 def build_scaled_pool_catalog(target_k: int) -> list[ComputePool]:
@@ -766,14 +1013,16 @@ def _safe_wilcoxon_two_sided(x: np.ndarray, y: np.ndarray) -> float:
     return float(res.pvalue)
 
 
-def _summarize_mc_results(
-    per_seed_records: list[dict[str, dict[str, float | int]]],
+def _summarize_rolling_window_results(
+    per_window_records: list[dict[str, dict[str, float | int]]],
 ) -> dict[str, Any]:
-    """Compute mean, sample std, 95% CI half-width, and paired Wilcoxon p-values."""
-    n_seeds = len(per_seed_records)
+    """Compute mean, sample std, exact Student-t 95% CI half-width, and paired Wilcoxon p-values."""
+    n_windows = len(per_window_records)
+    t_crit = float(student_t.ppf(0.975, df=max(1, n_windows - 1)))
     metrics_of_interest = [
         "annualized_cost_usd",
         "savings_vs_isosla_od_pct",
+        "savings_vs_savings_plan_pct",
         "sla_continuity_pct",
         "total_sla_breaches",
         "spot_storm_sla_breaches",
@@ -784,20 +1033,24 @@ def _summarize_mc_results(
     for s_name in STRATEGY_NAMES:
         strategy_stats[s_name] = {}
         for m_key in metrics_of_interest:
-            vals = np.asarray([float(rec[s_name][m_key]) for rec in per_seed_records], dtype=np.float64)
+            vals = np.asarray([float(rec[s_name][m_key]) for rec in per_window_records], dtype=np.float64)
             raw_arrays[s_name][m_key] = vals
             mean_val = float(np.mean(vals))
-            std_val = float(np.std(vals, ddof=1)) if n_seeds > 1 else 0.0
-            ci95_hw = 1.96 * std_val / math.sqrt(float(n_seeds))
+            std_val = float(np.std(vals, ddof=1)) if n_windows > 1 else 0.0
+            ci95_hw = t_crit * std_val / math.sqrt(float(n_windows))
             strategy_stats[s_name][m_key] = {
                 "mean": round(mean_val, 3),
                 "std": round(std_val, 3),
                 "ci95_halfwidth": round(ci95_hw, 3),
             }
 
-    p_cost = _safe_wilcoxon_two_sided(
+    p_cost_od = _safe_wilcoxon_two_sided(
         raw_arrays["AegisScale_Full"]["annualized_cost_usd"],
         raw_arrays["IsoSLA_100_OnDemand"]["annualized_cost_usd"],
+    )
+    p_cost_sp = _safe_wilcoxon_two_sided(
+        raw_arrays["AegisScale_Full"]["annualized_cost_usd"],
+        raw_arrays["OD_SavingsPlan_IsoSLA"]["annualized_cost_usd"],
     )
     p_cont_greedy = _safe_wilcoxon_two_sided(
         raw_arrays["AegisScale_Full"]["sla_continuity_pct"],
@@ -807,22 +1060,24 @@ def _summarize_mc_results(
         raw_arrays["AegisScale_Full"]["sla_continuity_pct"],
         raw_arrays["Reactive_HPA_55"]["sla_continuity_pct"],
     )
-    p_storm_static = _safe_wilcoxon_two_sided(
-        raw_arrays["AegisScale_Full"]["spot_storm_sla_breaches"],
-        raw_arrays["Static_30_70_Mixed"]["spot_storm_sla_breaches"],
+    p_cont_static = _safe_wilcoxon_two_sided(
+        raw_arrays["AegisScale_Full"]["sla_continuity_pct"],
+        raw_arrays["Static_30_70_Mixed"]["sla_continuity_pct"],
     )
 
     return {
-        "n_seeds": n_seeds,
-        "dataset": "AWS-ELB-Web",
+        "n_disjoint_windows": n_windows,
+        "student_t_critical_95": round(t_crit, 4),
+        "datasets_covered": [s.name for s in DATASET_SPECS],
         "strategy_statistics": strategy_stats,
         "wilcoxon_two_sided_tests": {
-            "p_value_cost_vs_isosla_od": p_cost,
+            "p_value_cost_vs_isosla_od": p_cost_od,
+            "p_value_cost_vs_savings_plan": p_cost_sp,
             "p_value_continuity_vs_greedy": p_cont_greedy,
             "p_value_continuity_vs_reactive": p_cont_reactive,
-            "p_value_storm_vs_static": p_storm_static,
-            "all_significant_at_alpha_0_05": bool(
-                max(p_cost, p_cont_greedy, p_cont_reactive, p_storm_static) < 0.05
+            "p_value_continuity_vs_static": p_cont_static,
+            "all_core_significant_at_alpha_0_05": bool(
+                max(p_cost_od, p_cost_sp, p_cont_greedy, p_cont_reactive) < 0.05
             ),
         },
     }
@@ -832,50 +1087,53 @@ def generate_publication_figures(
     results: dict[str, Any],
     figures_dir: Path,
 ) -> list[str]:
-    """Generate the 3 crisp, zero-overlap publication figures at 160 DPI."""
+    """Generate crisp, zero-overlap publication figures at 160 DPI."""
     figures_dir.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update(
         {
             "font.size": 10,
-            "axes.titlesize": 11.5,
-            "axes.labelsize": 10.5,
-            "legend.fontsize": 8.8,
+            "axes.titlesize": 11.2,
+            "axes.labelsize": 10.2,
+            "legend.fontsize": 8.4,
         }
     )
 
     saved_paths: list[str] = []
 
     # -------------------------------------------------------------------------
-    # Figure 1: multi_dataset_generalization.png (2-panel bar chart)
+    # Figure 1: multi_dataset_generalization.png (5 datasets x 6 strategies)
     # -------------------------------------------------------------------------
     exp_a = results["experiment_a_multi_dataset"]
     ds_names = [spec.name for spec in DATASET_SPECS]
     strat_labels = {
         "Reactive_HPA_55": "Reactive HPA (55%)",
         "IsoSLA_100_OnDemand": "Iso-SLA 100% OD",
-        "Greedy_Cheapest_Spot": "Greedy Cheapest Spot",
-        "Static_30_70_Mixed": "Static 30/70 Mixed",
+        "OD_SavingsPlan_IsoSLA": "1-Yr Savings Plan + OD",
+        "Greedy_Cheapest_Spot": "Greedy Spot (Karpenter)",
+        "Static_30_70_Mixed": "Static 30/70 (Warn-Aware)",
         "AegisScale_Full": "AegisScale (Full)",
     }
     strat_colors = {
         "Reactive_HPA_55": "#64748b",
-        "IsoSLA_100_OnDemand": "#3b82f6",
+        "IsoSLA_100_OnDemand": "#2563eb",
+        "OD_SavingsPlan_IsoSLA": "#0ea5e9",
         "Greedy_Cheapest_Spot": "#ef4444",
         "Static_30_70_Mixed": "#f59e0b",
         "AegisScale_Full": "#10b981",
     }
 
     x = np.arange(len(ds_names), dtype=np.float64)
-    width = 0.155
-    offsets = (np.arange(len(STRATEGY_NAMES)) - 2.0) * width
+    n_s = len(STRATEGY_NAMES)
+    width = 0.13
+    offsets = (np.arange(n_s) - (n_s - 1) / 2.0) * width
 
-    fig1, (ax_cont, ax_cost) = plt.subplots(1, 2, figsize=(14.4, 6.1))
-    fig1.subplots_adjust(top=0.80, bottom=0.14, left=0.06, right=0.98, wspace=0.18)
+    fig1, (ax_cont, ax_cost) = plt.subplots(1, 2, figsize=(15.0, 6.2))
+    fig1.subplots_adjust(top=0.79, bottom=0.16, left=0.06, right=0.98, wspace=0.17)
 
     for idx, s_name in enumerate(STRATEGY_NAMES):
         cont_vals = [float(exp_a[ds]["strategies"][s_name]["sla_continuity_pct"]) for ds in ds_names]
         cost_vals = [float(exp_a[ds]["strategies"][s_name]["annualized_cost_usd"]) / 1000.0 for ds in ds_names]
-        edge_w = 1.0 if s_name == "AegisScale_Full" else 0.4
+        edge_w = 1.1 if s_name == "AegisScale_Full" else 0.4
         ax_cont.bar(
             x + offsets[idx],
             cont_vals,
@@ -900,17 +1158,17 @@ def generate_publication_figures(
         for s in STRATEGY_NAMES
     )
     ax_cont.set_ylim(max(0.0, math.floor(min_cont - 6.0)), 102.5)
-    ax_cont.axhline(98.5, color="#0f172a", linestyle="--", linewidth=1.1, alpha=0.75, label="98.5% Target Envelope")
+    ax_cont.axhline(98.5, color="#0f172a", linestyle="--", linewidth=1.1, alpha=0.75, label="98.5% Target")
     ax_cont.set_xticks(x)
-    ax_cont.set_xticklabels(ds_names, rotation=10, ha="right")
+    ax_cont.set_xticklabels(ds_names, rotation=14, ha="right")
     ax_cont.set_ylabel("P99 Latency SLA Continuity (%)")
-    ax_cont.set_title("(a) Zero-Retuning SLA Continuity Across Real Traces")
+    ax_cont.set_title("(a) Zero-Retuning SLA Continuity (5 Real Traces)")
     ax_cont.grid(axis="y", linestyle="--", alpha=0.35)
 
     ax_cost.set_xticks(x)
-    ax_cost.set_xticklabels(ds_names, rotation=10, ha="right")
+    ax_cost.set_xticklabels(ds_names, rotation=14, ha="right")
     ax_cost.set_ylabel("Annualized Compute Spend ($K USD)")
-    ax_cost.set_title("(b) Annualized Provisioning Cost Across Real Traces")
+    ax_cost.set_title("(b) Annualized Cost vs. OD and 1-Yr Savings Plan")
     ax_cost.grid(axis="y", linestyle="--", alpha=0.35)
     ax_cost.margins(y=0.10)
 
@@ -920,14 +1178,13 @@ def generate_publication_figures(
         labels,
         loc="upper center",
         bbox_to_anchor=(0.5, 0.915),
-        ncol=6,
+        ncol=4,
         framealpha=0.95,
-        fontsize=8.8,
     )
     fig1.suptitle(
-        "Multi-Dataset Empirical Generalization (Fixed SLAPolicy Across 4 Numenta NAB Production Workloads)",
+        "Multi-Dataset Generalization Across 4 AWS/Viral NAB Traces + 2024 Microsoft Azure LLM Inference",
         y=0.975,
-        fontsize=12.5,
+        fontsize=12.2,
         fontweight="bold",
     )
     p1 = figures_dir / "multi_dataset_generalization.png"
@@ -936,19 +1193,20 @@ def generate_publication_figures(
     saved_paths.append(str(p1))
 
     # -------------------------------------------------------------------------
-    # Figure 2: ablation_and_coldstart.png (Left = 5-way Ablation; Right = Cold-Start)
+    # Figure 2: ablation_and_coldstart.png
     # -------------------------------------------------------------------------
     exp_c = results["experiment_c_ablations"]
     exp_d_cold = results["experiment_d_sensitivity_and_scalability"]["cold_start_delay_sweep"]
 
-    fig2, (ax_abl, ax_cold) = plt.subplots(1, 2, figsize=(14.0, 5.5), constrained_layout=True)
+    fig2, (ax_abl, ax_cold) = plt.subplots(1, 2, figsize=(14.4, 5.6), constrained_layout=True)
 
     abl_pretty = {
         "Full_AegisScale": "Full AegisScale",
         "Ablation_No_ACI": "No ACI (Point x1.05)",
         "Ablation_Static_Conformal": "Static Conformal",
-        "Ablation_No_GGc": "No G/G/c (Mean Rate)",
+        "Ablation_No_GGc": "No G/G/c (85% Util)",
         "Ablation_Uncorrelated_Spot": "Uncorrelated Spot",
+        "Ablation_No_Spot_Warnings": "No 2-Min Warnings",
     }
     abl_colors = {
         "Full_AegisScale": "#10b981",
@@ -956,6 +1214,7 @@ def generate_publication_figures(
         "Ablation_Static_Conformal": "#f59e0b",
         "Ablation_No_GGc": "#8b5cf6",
         "Ablation_Uncorrelated_Spot": "#ec4899",
+        "Ablation_No_Spot_Warnings": "#0284c7",
     }
     abl_markers = {
         "Full_AegisScale": "o",
@@ -963,10 +1222,9 @@ def generate_publication_figures(
         "Ablation_Static_Conformal": "^",
         "Ablation_No_GGc": "D",
         "Ablation_Uncorrelated_Spot": "X",
+        "Ablation_No_Spot_Warnings": "P",
     }
 
-    # Plot mean across the two ablation datasets (AWS-ELB-Web & Viral-Flash-Traffic) for crisp frontier
-    pts_x: list[float] = []
     pts_y: list[float] = []
     for v_name in ABLATION_NAMES:
         c_elb = float(exp_c["AWS-ELB-Web"][v_name]["annualized_cost_usd"]) / 1000.0
@@ -975,25 +1233,24 @@ def generate_publication_figures(
         b_vir = float(exp_c["Viral-Flash-Traffic"][v_name]["total_sla_breaches"])
         avg_cost_k = 0.5 * (c_elb + c_vir)
         tot_breaches = b_elb + b_vir
-        pts_x.append(avg_cost_k)
         pts_y.append(tot_breaches)
         ax_abl.scatter(
             avg_cost_k,
             tot_breaches,
-            s=145,
+            s=140,
             color=abl_colors[v_name],
             marker=abl_markers[v_name],
             edgecolors="#0f172a",
             linewidths=0.9,
             zorder=4,
-            label=f"{abl_pretty[v_name]} ({int(tot_breaches)} breaches, ${avg_cost_k:.1f}K)",
+            label=f"{abl_pretty[v_name]} ({int(tot_breaches)} br, ${avg_cost_k:.1f}K)",
         )
 
     ax_abl.margins(x=0.18)
-    ax_abl.set_ylim(-max(2.0, 0.06 * max(pts_y)), max(12.0, max(pts_y) * 1.48))
+    ax_abl.set_ylim(-max(2.0, 0.06 * max(pts_y)), max(14.0, max(pts_y) * 1.48))
     ax_abl.set_xlabel("Mean Annualized Spend Across ELB + Viral Traces ($K USD)")
     ax_abl.set_ylabel("Combined P99 SLA Breaches (Lower is Better)")
-    ax_abl.set_title("(a) 5-Way Architectural Ablation: Cost vs. SLA Breaches")
+    ax_abl.set_title("(a) Unconfounded 6-Way Ablation (1 Change per Row)")
     ax_abl.grid(True, linestyle="--", alpha=0.35)
     ax_abl.legend(loc="upper right", framealpha=0.94)
 
@@ -1027,7 +1284,7 @@ def generate_publication_figures(
             xytext=(0, 8),
             textcoords="offset points",
             ha="center",
-            fontsize=8.8,
+            fontsize=8.6,
             color="#065f46",
             fontweight="bold",
         )
@@ -1037,24 +1294,24 @@ def generate_publication_figures(
             xytext=(0, -14),
             textcoords="offset points",
             ha="center",
-            fontsize=8.8,
+            fontsize=8.6,
             color="#991b1b",
         )
 
     ax_cold.set_xticks(delays_sec)
-    ax_cold.set_xticklabels([f"{d}s\n({d // 60} step)" if d == 60 else f"{d}s\n({d // 60} steps)" for d in delays_sec])
+    ax_cold.set_xticklabels([f"{d}s\n({d // 60} min)" for d in delays_sec])
     low_y = min(min(react_cold), min(aegis_cold))
     ax_cold.set_ylim(max(0.0, low_y - 9.0), 103.5)
     ax_cold.set_xlim(-15, max(delays_sec) + 18)
-    ax_cold.set_xlabel("Kubernetes Node Cold-Start Provisioning Lag")
+    ax_cold.set_xlabel("True 1-Minute Resolution Node Cold-Start Lag (with Spot Eviction)")
     ax_cold.set_ylabel("P99 Latency SLA Continuity (%)")
-    ax_cold.set_title("(b) Node Cold-Start Provisioning Delay Sensitivity")
+    ax_cold.set_title("(b) Node Boot Delay Sensitivity (dt = 60s)")
     ax_cold.grid(True, linestyle="--", alpha=0.35)
     ax_cold.legend(loc="center right", framealpha=0.93)
 
     fig2.suptitle(
-        "Component Ablation Analysis and Kubernetes Node Cold-Start Resilience",
-        fontsize=12.5,
+        "Unconfounded Architectural Ablations and True 1-Minute Node Cold-Start Resilience",
+        fontsize=12.2,
         fontweight="bold",
     )
     p2 = figures_dir / "ablation_and_coldstart.png"
@@ -1063,7 +1320,7 @@ def generate_publication_figures(
     saved_paths.append(str(p2))
 
     # -------------------------------------------------------------------------
-    # Figure 3: solver_scalability.png (HiGHS MILP Median & P99 vs K = 21..210)
+    # Figure 3: solver_scalability.png
     # -------------------------------------------------------------------------
     exp_scale = results["experiment_d_sensitivity_and_scalability"]["highs_scalability_sweep"]
     k_vals = [int(item["pool_count_k"]) for item in exp_scale]
@@ -1095,7 +1352,7 @@ def generate_publication_figures(
         color="#dc2626",
         linestyle="--",
         linewidth=1.8,
-        label="Real-Time Control Budget (1,000 ms)",
+        label="1,000 ms Sub-Budget (of 60s Control Loop)",
     )
 
     for k_v, m_v, p_v in zip(k_vals, med_ms, p99_ms):
@@ -1122,7 +1379,7 @@ def generate_publication_figures(
     ax_sc.set_xticks(k_vals)
     ax_sc.set_xticklabels([str(k) for k in k_vals])
     ax_sc.set_xlim(min(k_vals) - 10, max(k_vals) + 14)
-    ax_sc.set_ylim(max(1.0, min(med_ms) * 0.40), max(2200.0, max(p99_ms) * 1.75))
+    ax_sc.set_ylim(max(1.0, min(med_ms) * 0.40), max(2400.0, max(p99_ms) * 1.85))
     ax_sc.set_xlabel("Candidate Compute Pool Count K (Multi-AZ / Multi-Family Fleet)")
     ax_sc.set_ylabel("HiGHS CVaR MILP Solve Time (ms, log scale)")
     ax_sc.set_title("Rockafellar-Uryasev CVaR MILP Scalability (S = 200 Scenarios per Solve)")
@@ -1144,10 +1401,14 @@ def run_statistical_rigor_suite(
     output_json: Path = DEFAULT_OUTPUT_JSON,
     figures_dir: Path = DEFAULT_FIGURES_DIR,
 ) -> dict[str, Any]:
-    """Execute Experiments A, B, C, and D, write JSON report, and render 3 figures."""
+    """Execute Experiments A, B, C, D, and E, write JSON report, and render 3 figures."""
     t_start = time.perf_counter()
     steps = max_steps if max_steps is not None else (80 if fast else 600)
-    seeds = n_seeds if n_seeds is not None else (6 if fast else 30)
+    # Experiment B: 30 disjoint real windows (6 per dataset x 5 datasets) in full mode, 10 in fast mode
+    windows_per_dataset = 2 if fast else 6
+    if n_seeds is not None:
+        windows_per_dataset = max(1, n_seeds // len(DATASET_SPECS))
+    window_steps = 80 if fast else 300
     num_scenarios = 90 if fast else 150
     scalability_trials = 8 if fast else 25
 
@@ -1164,48 +1425,74 @@ def run_statistical_rigor_suite(
         max_steps=steps,
         start_offset=viral_offset,
     )
+    _, azure_trace, _ = load_empirical_trace(
+        csv_path=DATA_DIR / "real_azure_inference_2024.csv",
+        scale_to_mean_rps=3200.0,
+        max_steps=steps,
+        start_offset=0,
+    )
+
+    # True 1-minute interpolated ELB trace for cold-start sweep (dt=60s)
+    elb_1min_full = resample_5min_to_1min(elb_trace[: min(len(elb_trace), 120 if not fast else 24)])
 
     max_workers = min(os.cpu_count() or 4, 8)
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit Experiment A (4 real datasets)
+        # Experiment A: 5 real production datasets
         fut_exp_a = [
             executor.submit(_worker_dataset_task, (spec, steps, num_scenarios))
             for spec in DATASET_SPECS
         ]
 
-        # Submit Experiment B (N independent Monte Carlo seeds on AWS-ELB-Web)
-        fut_exp_b = [
-            executor.submit(_worker_mc_seed_task, (elb_trace, s_idx, num_scenarios))
-            for s_idx in range(seeds)
-        ]
+        # Experiment B: Disjoint real rolling windows across all 5 datasets
+        rolling_tasks: list[tuple[DatasetSpec, int, int, int, int]] = []
+        seed_counter = 0
+        for spec in DATASET_SPECS:
+            for w_idx in range(windows_per_dataset):
+                # Space windows evenly without overlap
+                stride = window_steps
+                offset = w_idx * stride
+                rolling_tasks.append((spec, offset, window_steps, 2000 + seed_counter * 97, num_scenarios))
+                seed_counter += 1
+        fut_exp_b = [executor.submit(_worker_rolling_window_task, task) for task in rolling_tasks]
 
-        # Submit Experiment C (5-way ablation on AWS-ELB-Web & Viral-Flash-Traffic)
+        # Experiment C: Unconfounded 6-way ablation on AWS-ELB-Web & Viral-Flash-Traffic
         ablation_tasks: list[tuple[str, str, np.ndarray, int]] = []
         for ds_label, ds_trace in [("AWS-ELB-Web", elb_trace), ("Viral-Flash-Traffic", viral_trace)]:
             for v_name in ABLATION_NAMES:
                 ablation_tasks.append((ds_label, v_name, ds_trace, num_scenarios))
         fut_exp_c = [executor.submit(_worker_ablation_task, task) for task in ablation_tasks]
 
-        # Submit Experiment D.1 (AZ correlation sweep) and D.2 (Node cold-start delay sweep)
+        # Experiment D.1: AZ correlation sweep
         rho_az_grid = [0.0, 0.25, 0.55, 0.75]
         fut_az = [
             executor.submit(_worker_az_corr_task, (rho_az, elb_trace, num_scenarios))
             for rho_az in rho_az_grid
         ]
+
+        # Experiment D.2: True 1-minute (dt=60s) node cold-start delay sweep
         boot_delays = [0, 1, 2, 3]
         fut_cold = [
-            executor.submit(_worker_coldstart_task, (d, elb_trace, num_scenarios))
+            executor.submit(_worker_coldstart_task, (d, elb_1min_full, num_scenarios))
             for d in boot_delays
         ]
+
+        # Experiment D.3: Spot price multiplier sensitivity (0.7x, 1.0x, 1.3x, 1.6x)
+        spot_mults = [0.7, 1.0, 1.3, 1.6]
+        spot_tasks = [
+            (ds_name, m, tr, num_scenarios)
+            for ds_name, tr in [("AWS-ELB-Web", elb_trace), ("Azure-LLM-Inference-2024", azure_trace)]
+            for m in spot_mults
+        ]
+        fut_spot = [executor.submit(_worker_spot_price_task, task) for task in spot_tasks]
 
         exp_a_results: dict[str, Any] = {}
         for fut in fut_exp_a:
             ds_name, ds_payload = fut.result()
             exp_a_results[ds_name] = ds_payload
 
-        mc_records = [fut.result() for fut in fut_exp_b]
-        exp_b_results = _summarize_mc_results(mc_records)
+        rolling_records = [fut.result() for fut in fut_exp_b]
+        exp_b_results = _summarize_rolling_window_results(rolling_records)
 
         exp_c_results: dict[str, dict[str, Any]] = {"AWS-ELB-Web": {}, "Viral-Flash-Traffic": {}}
         for fut in fut_exp_c:
@@ -1218,11 +1505,25 @@ def run_statistical_rigor_suite(
         cold_sweep_map = dict(fut.result() for fut in fut_cold)
         cold_sweep_list = [cold_sweep_map[d] for d in boot_delays]
 
-    # Experiment D.3: Single-thread timing of HiGHS MILP scalability without CPU contention
+        spot_sens: dict[str, list[dict[str, Any]]] = {"AWS-ELB-Web": [], "Azure-LLM-Inference-2024": []}
+        spot_raw: dict[tuple[str, float], dict[str, Any]] = {}
+        for fut in fut_spot:
+            dn, mv, payload = fut.result()
+            spot_raw[(dn, mv)] = payload
+        for dn in ("AWS-ELB-Web", "Azure-LLM-Inference-2024"):
+            spot_sens[dn] = [spot_raw[(dn, m)] for m in spot_mults]
+
+    # Experiment D.4: Single-thread timing of HiGHS MILP scalability without CPU contention
     scalability_list = run_highs_scalability_sweep(
         pool_counts=[21, 42, 84, 147, 210],
         num_scenarios=200,
         trials_per_k=scalability_trials,
+    )
+
+    # Experiment E: Empirical 2D Kubernetes/Karpenter multi-region benchmark on Azure 2024 trace
+    exp_e_results = run_k8s_2d_multiregion_benchmark(
+        azure_trace=azure_trace[: min(len(azure_trace), 80 if fast else 300)],
+        num_scenarios=num_scenarios,
     )
 
     elapsed_sec = time.perf_counter() - t_start
@@ -1232,19 +1533,24 @@ def run_statistical_rigor_suite(
         "suite_metadata": {
             "mode": "fast" if fast else "publication_full",
             "max_steps_per_dataset": steps,
-            "monte_carlo_seeds": seeds,
+            "disjoint_rolling_windows": len(rolling_records),
+            "rolling_window_steps": window_steps,
             "milp_scenarios": num_scenarios,
+            "savings_plan_discount": SAVINGS_PLAN_DISCOUNT,
+            "http_timeout_cap_ms": HTTP_GATEWAY_TIMEOUT_MS,
             "elapsed_wall_time_sec": round(elapsed_sec, 2),
             "fixed_sla_policy": fixed_pol.model_dump(),
         },
         "experiment_a_multi_dataset": exp_a_results,
-        "experiment_b_monte_carlo_wilcoxon": exp_b_results,
+        "experiment_b_disjoint_wilcoxon": exp_b_results,
         "experiment_c_ablations": exp_c_results,
         "experiment_d_sensitivity_and_scalability": {
             "az_correlation_sweep": az_sweep_list,
             "cold_start_delay_sweep": cold_sweep_list,
+            "spot_price_multiplier_sensitivity": spot_sens,
             "highs_scalability_sweep": scalability_list,
         },
+        "experiment_e_k8s_2d_multiregion": exp_e_results,
     }
 
     figure_paths = generate_publication_figures(results=results, figures_dir=figures_dir)
@@ -1257,11 +1563,11 @@ def run_statistical_rigor_suite(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run AegisScale multi-dataset, 30-seed Wilcoxon, ablation, and sensitivity benchmark."
+        description="Run AegisScale Phase 3 audited multi-dataset, Wilcoxon, ablation, sensitivity, and K8s benchmark."
     )
-    parser.add_argument("--fast", action="store_true", help="Run fast CI/unit-test configuration (80 steps, 6 seeds).")
+    parser.add_argument("--fast", action="store_true", help="Run fast CI/unit-test configuration.")
     parser.add_argument("--max-steps", type=int, default=None, help="Override steps per dataset.")
-    parser.add_argument("--n-seeds", type=int, default=None, help="Override number of Monte Carlo seeds.")
+    parser.add_argument("--n-seeds", type=int, default=None, help="Override total disjoint windows.")
     args = parser.parse_args()
 
     res = run_statistical_rigor_suite(
@@ -1270,8 +1576,8 @@ def main() -> int:
         n_seeds=args.n_seeds,
     )
     meta = res["suite_metadata"]
-    wilc = res["experiment_b_monte_carlo_wilcoxon"]["wilcoxon_two_sided_tests"]
-    print(f"AegisScale Statistical Rigor Suite completed in {meta['elapsed_wall_time_sec']}s ({meta['mode']}).")
+    wilc = res["experiment_b_disjoint_wilcoxon"]["wilcoxon_two_sided_tests"]
+    print(f"AegisScale Phase 3 Audited Suite completed in {meta['elapsed_wall_time_sec']}s ({meta['mode']}).")
     print("Wilcoxon two-sided p-values:", json.dumps(wilc, indent=2))
     return 0
 

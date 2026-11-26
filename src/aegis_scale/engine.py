@@ -73,8 +73,8 @@ class AegisScaleEngine:
         """Ingest latest RPS telemetry, update ACI, size capacity via G/G/c, and solve CVaR MILP."""
         conformal_res = self.predictor.step(observed_rps)
         _, next_upper_rps = self.predictor.predict_upper_bound()
-        # Use max of current step's conformal upper bound and one-step-ahead upper bound for safety
-        design_rps = max(conformal_res.upper_bound, next_upper_rps, observed_rps)
+        # Next-interval conformal upper bound floored at current observed RPS
+        design_rps = max(next_upper_rps, observed_rps)
 
         c_req = required_safe_vcpus(
             arrival_rate_rps=design_rps,

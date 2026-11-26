@@ -368,8 +368,9 @@ class K8sAegisOperator:
 
         conformal_res = self.predictor.step(obs)
         _, next_upper_rps = self.predictor.predict_upper_bound()
-        design_rps = max(conformal_res.upper_bound, next_upper_rps, obs)
+        design_rps = max(next_upper_rps, obs)
 
+        buffered_arrival_rps = design_rps + max(0.0, ramp_rate) * self.overhead.node_boot_seconds
         req_replicas = required_safe_pod_replicas(
             design_rps=design_rps,
             pod=self.pod,
@@ -413,8 +414,8 @@ class K8sAegisOperator:
         )
 
         p99_wait_sec = ggc_quantile_wait_seconds(
-            arrival_rate_rps=design_rps,
-            vcpus=float(req_replicas),
+            arrival_rate_rps=buffered_arrival_rps,
+            vcpus=float(decision.total_provisioned_vcpus),
             per_vcpu_mu=float(self.pod.target_rps_per_pod),
             quantile=0.99,
             arrival_cv2=self.policy.arrival_cv2,

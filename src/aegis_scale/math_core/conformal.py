@@ -1,8 +1,9 @@
 """Adaptive Conformal Inference (ACI) for non-stationary cloud traffic streams.
 
 Implements a scale-invariant online Recursive Least Squares (RLS) delta-harmonic
-forecaster paired with Gibbs & Candes (2021) Adaptive Conformal Inference for
-finite-sample, distribution-free upper traffic bounds.
+forecaster paired with Gibbs & Candes (2021) Adaptive Conformal Inference.
+Updates dual quantile state alpha_t strictly against the actual provisioned
+finite upper bound (zero 1e9 bookkeeping inflation and zero step-1 lookahead).
 """
 
 from __future__ import annotations
@@ -27,7 +28,11 @@ class ConformalStepResult:
 
 
 class OnlineHarmonicRLS:
-    """Scale-invariant forgetting-factor RLS forecaster over normalized deltas and harmonics."""
+    """Scale-invariant forgetting-factor RLS forecaster over normalized deltas and harmonics.
+
+    Uses strictly lagged scale sigma_{t-1} when forming features phi_t and target_delta,
+    updating sigma_t only after the RLS parameter update (matching paper Eqs. 1-2).
+    """
 
     def __init__(
         self,
@@ -39,8 +44,6 @@ class OnlineHarmonicRLS:
         self.n_lags = n_lags
         self.period_steps = max(2, period_steps)
         self.lam = forgetting_factor
-        # Predicts normalized increment (y_t - y_{t-1}) / scale using:
-        # [1, recent normalized increments..., sin(w*t), cos(w*t), sin(2*w*t), cos(2*w*t)]
         self.dim = 1 + n_lags + 4
         self.theta = np.zeros(self.dim, dtype=np.float64)
         self.cov = np.eye(self.dim, dtype=np.float64) * ridge_init
@@ -48,10 +51,10 @@ class OnlineHarmonicRLS:
         self.running_scale = 1.0
         self.step_count = 0
 
-    def _features(self, t: int) -> np.ndarray:
+    def _features(self, t: int, scale: float) -> np.ndarray:
         vals = list(self.history)
-        scale = max(1.0, self.running_scale)
-        diffs = [(vals[i + 1] - vals[i]) / scale for i in range(len(vals) - 1)]
+        denom_scale = max(1.0, scale)
+        diffs = [(vals[i + 1] - vals[i]) / denom_scale for i in range(len(vals) - 1)]
         if len(diffs) < self.n_lags:
             diffs = [0.0] * (self.n_lags - len(diffs)) + diffs
         else:
@@ -73,26 +76,29 @@ class OnlineHarmonicRLS:
         last_y = float(self.history[-1])
         if len(self.history) < 2:
             return max(0.0, last_y)
-        x = self._features(self.step_count)
+        x = self._features(self.step_count, self.running_scale)
         norm_delta = float(np.clip(np.dot(self.theta, x), -0.75, 0.75))
         return max(0.0, last_y + norm_delta * self.running_scale)
 
     def update(self, y: float) -> None:
         y_val = max(0.0, float(y))
-        if len(self.history) == 0:
-            self.running_scale = max(1.0, y_val)
-        else:
-            self.running_scale = 0.95 * self.running_scale + 0.05 * max(1.0, y_val)
+        prev_scale = max(1.0, self.running_scale)
 
         if len(self.history) >= 2:
-            x = self._features(self.step_count)
-            target_delta = (y_val - float(self.history[-1])) / max(1.0, self.running_scale)
+            x = self._features(self.step_count, prev_scale)
+            target_delta = (y_val - float(self.history[-1])) / prev_scale
             px = self.cov @ x
             denom = self.lam + float(np.dot(x, px))
             gain = px / denom
             err = target_delta - float(np.dot(self.theta, x))
             self.theta = self.theta + gain * err
             self.cov = (self.cov - np.outer(gain, px)) / self.lam
+
+        # Update sigma_t strictly AFTER parameter update
+        if len(self.history) == 0:
+            self.running_scale = max(1.0, y_val)
+        else:
+            self.running_scale = 0.95 * self.running_scale + 0.05 * max(1.0, y_val)
 
         self.history.append(y_val)
         self.step_count += 1
@@ -101,11 +107,11 @@ class OnlineHarmonicRLS:
 class AdaptiveConformalPredictor:
     """Gibbs & Candes (2021) Adaptive Conformal Inference for upper demand bounds.
 
-    Maintains the unclipped dual-variable recursion:
-        alpha_{t+1} = alpha_t + gamma * (alpha_target - err_t)
-    with boundary quantile conventions:
-        alpha_t <= 0  -> infinite theoretical quantile (err_t = 0)
-        alpha_t >= 1  -> -inf theoretical quantile (err_t = 1)
+    Scores err_t strictly against the actual provisioned upper bound U_t(alpha_t).
+    In infinite-ceiling theoretical mode (finite_cap=False), alpha_t <= 0 maps to
+    +inf so Theorem 1 holds with exact bound |(1/T) sum err_t - alpha| <= (1+gamma)/(gamma*T).
+    In practical cloud provisioning mode (default, finite_cap=True), alpha_t <= 0 maps
+    to a finite conservative surge envelope and err_t is honestly evaluated against it.
     """
 
     def __init__(
@@ -114,6 +120,7 @@ class AdaptiveConformalPredictor:
         gamma: float = 0.05,
         window_size: int = 120,
         period_steps: int = 288,
+        finite_cap: bool = True,
         safety_envelope_ceiling: float = 1e9,
     ) -> None:
         if not (0.0 < alpha_target < 1.0):
@@ -126,6 +133,7 @@ class AdaptiveConformalPredictor:
         self.alpha_target = float(alpha_target)
         self.gamma = float(gamma)
         self.window_size = int(window_size)
+        self.finite_cap = bool(finite_cap)
         self.safety_envelope_ceiling = float(safety_envelope_ceiling)
 
         self.alpha_t = float(alpha_target)
@@ -134,14 +142,14 @@ class AdaptiveConformalPredictor:
 
         self.total_steps = 0
         self.total_errors = 0
-        self._pending_prediction: tuple[float, float, float] | None = None
+        self._pending_prediction: tuple[float, float] | None = None
 
     @staticmethod
     def theoretical_miscoverage_deviation_bound(num_steps: int, gamma: float) -> float:
-        """Deterministic upper bound |(1/T) sum err_t - alpha_target| <= (1 + 2*gamma)/(gamma*T)."""
+        """Tight Theorem 1 bound |(1/T) sum err_t - alpha_target| <= (1 + gamma)/(gamma*T) for alpha_1 in (0,1)."""
         if num_steps <= 0:
             return 1.0
-        return (1.0 + 2.0 * gamma) / (gamma * float(num_steps))
+        return (1.0 + gamma) / (gamma * float(num_steps))
 
     def _conformal_quantile(self, alpha: float) -> float:
         if alpha <= 0.0:
@@ -149,7 +157,7 @@ class AdaptiveConformalPredictor:
         if alpha >= 1.0:
             return -self.safety_envelope_ceiling
         if len(self.residuals) == 0:
-            return 0.10 * self.forecaster.running_scale if self.forecaster.step_count > 0 else 0.0
+            return 0.15 * self.forecaster.running_scale if self.forecaster.step_count > 0 else 0.0
 
         arr = np.sort(np.asarray(self.residuals, dtype=np.float64))
         n = len(arr)
@@ -160,52 +168,67 @@ class AdaptiveConformalPredictor:
         return float(np.quantile(arr, q_level, method="higher"))
 
     def predict_upper_bound(self) -> tuple[float, float]:
-        """Predict (point_forecast, conformal_upper_bound) for the next interval."""
+        """Predict (point_forecast, provisioned_upper_bound) for the next interval."""
         point = self.forecaster.predict()
         q = self._conformal_quantile(self.alpha_t)
         if self.alpha_t <= 0.0:
-            max_res = max(self.residuals) if self.residuals else 0.15 * point
-            practical_upper = max(point + max(0.0, max_res) * 1.25, point * 1.25 + 5.0)
-            theoretical_upper = self.safety_envelope_ceiling
+            if not self.finite_cap:
+                upper = self.safety_envelope_ceiling
+            else:
+                max_res = max(self.residuals) if self.residuals else 0.20 * point
+                recent_max = max(self.forecaster.history) if self.forecaster.history else point
+                upper = max(
+                    point + max(0.0, max_res) * 1.35,
+                    recent_max * 1.30,
+                    point * 1.35 + 10.0,
+                )
         elif self.alpha_t >= 1.0:
-            practical_upper = 0.0
-            theoretical_upper = -self.safety_envelope_ceiling
+            upper = 0.0
         else:
-            practical_upper = max(0.0, point + q)
-            theoretical_upper = point + q
+            upper = max(0.0, point + q)
 
-        self._pending_prediction = (point, practical_upper, theoretical_upper)
-        return point, practical_upper
+        self._pending_prediction = (point, upper)
+        return point, upper
 
     def observe(self, observed_value: float) -> ConformalStepResult:
-        """Observe true workload D_t, update ACI alpha_{t+1}, residual buffer, and RLS weights."""
+        """Observe true workload D_t, score err_t against actual upper_bound, and update alpha_{t+1}."""
         y = max(0.0, float(observed_value))
         if self._pending_prediction is None:
             self.predict_upper_bound()
         assert self._pending_prediction is not None
-        point, practical_upper, theoretical_upper = self._pending_prediction
+        point, upper = self._pending_prediction
         self._pending_prediction = None
 
         used_alpha = self.alpha_t
-        err_t = 1 if y > theoretical_upper else 0
+        is_warmup_first = self.forecaster.step_count == 0
 
-        self.total_steps += 1
-        self.total_errors += err_t
-
-        self.alpha_t = self.alpha_t + self.gamma * (self.alpha_target - float(err_t))
-
-        if self.forecaster.step_count > 0:
+        if is_warmup_first:
+            # First observation initializes scale/history without polluting miscoverage statistics
+            err_t = 0
+        else:
+            err_t = 1 if y > upper else 0
+            self.total_steps += 1
+            self.total_errors += err_t
+            self.alpha_t = max(
+                -self.gamma,
+                min(1.0 + self.gamma, self.alpha_t + self.gamma * (self.alpha_target - float(err_t))),
+            )
             self.residuals.append(y - point)
+
         self.forecaster.update(y)
 
-        emp_rate = float(self.total_errors) / float(self.total_steps)
+        emp_rate = (
+            float(self.total_errors) / float(self.total_steps)
+            if self.total_steps > 0
+            else 0.0
+        )
         return ConformalStepResult(
             step=self.total_steps,
             point_forecast=point,
-            upper_bound=practical_upper if self.total_steps > 1 else y * 1.15,
+            upper_bound=upper,
             observed=y,
             alpha_t=used_alpha,
-            miscovered=bool(err_t),
+            miscovered=bool(err_t) if not is_warmup_first else None,
             empirical_miscoverage_rate=emp_rate,
         )
 
@@ -220,6 +243,7 @@ class AdaptiveConformalPredictor:
             "alpha_target": self.alpha_target,
             "gamma": self.gamma,
             "window_size": self.window_size,
+            "finite_cap": self.finite_cap,
             "alpha_t": self.alpha_t,
             "total_steps": self.total_steps,
             "total_errors": self.total_errors,
@@ -237,6 +261,7 @@ class AdaptiveConformalPredictor:
             alpha_target=float(data["alpha_target"]),
             gamma=float(data["gamma"]),
             window_size=int(data["window_size"]),
+            finite_cap=bool(data.get("finite_cap", True)),
         )
         inst.alpha_t = float(data["alpha_t"])
         inst.total_steps = int(data["total_steps"])

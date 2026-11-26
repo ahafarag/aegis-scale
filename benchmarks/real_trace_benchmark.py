@@ -58,7 +58,8 @@ def load_real_workload_csv(
                 break
 
     arr = np.asarray(raw_values, dtype=np.float64)
-    emp_mean = float(np.mean(arr))
+    warmup = max(1, min(60, len(arr)))
+    emp_mean = float(np.mean(arr[:warmup]))
     scaled = arr * (scale_to_mean_rps / max(emp_mean, 1e-9))
     return timestamps, scaled
 

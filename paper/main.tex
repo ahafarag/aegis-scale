@@ -18,15 +18,15 @@
 \title{AegisScale: Distributionally-Robust Cloud and Kubernetes Karpenter Capacity Scaling via Adaptive Conformal Inference and Correlated Spot CVaR MILP}
 
 \author{Abdelrahman~H.~Farag%
-\thanks{Manuscript prepared November 2026. Open-source implementation, AWS CDK v2 and Karpenter v1 infrastructure modules, and reproducible empirical benchmark suites are publicly available at \texttt{https://github.com/ahafarag/aegis-scale}.}}
+\thanks{Working Preprint, November 2026. Open-source implementation, AWS CDK v2 and Karpenter v1 infrastructure modules, and reproducible empirical benchmark suites are publicly available at \texttt{https://github.com/ahafarag/aegis-scale}.}}
 
-\markboth{IEEE TRANSACTIONS MANUSCRIPT PREPRINT, NOVEMBER 2026}%
+\markboth{PREPRINT MANUSCRIPT, NOVEMBER 2026}%
 {FARAG: AEGISSCALE---DISTRIBUTIONALLY-ROBUST CLOUD AND KUBERNETES KARPENTER CAPACITY SCALING}
 
 \maketitle
 
 \begin{abstract}
-Cloud-native infrastructure teams face an acute trade-off between compute expenditure and tail-latency service-level agreement (SLA) continuity. Provisioning exclusively On-Demand virtual machines guarantees capacity availability at a $2.5\times$--$5\times$ price premium, whereas naive adoption of revocable Spot instances---even behind modern bin-packing node provisioners such as Kubernetes Karpenter---exposes workloads to correlated capacity recalls across Availability Zones (AZs) and processor families, triggering severe $\mathrm{P99}$ latency violations during non-stationary traffic surges. We present \textsc{AegisScale}, a unified mathematical control architecture for Amazon EC2 and EKS/Karpenter clusters that couples distribution-free online statistical learning, heavy-traffic queueing theory, two-dimensional container bin-packing, and risk-averse discrete portfolio optimization. First, Adaptive Conformal Inference (ACI) wraps a scale-invariant delta-harmonic Recursive Least Squares (RLS) filter to guarantee finite-sample upper demand coverage under arbitrary distribution shifts without parametric assumptions. Second, a Kingman--Sakasegawa $G/G/c$ heavy-traffic diffusion law maps conformal arrival-rate envelopes and node cold-start lead-time buffers into exact minimum safe compute and pod replica counts, reducing analytically to the closed-form $M/M/1$ waiting quantile at $c=1$. Third, a three-factor Gaussian copula models correlated $(\text{AZ}, \text{family})$ Spot recalls within an auxiliary-free Rockafellar--Uryasev Conditional Value-at-Risk ($\mathrm{CVaR}_\beta$) Mixed-Integer Linear Program (MILP) that reconciles declarative \texttt{karpenter.sh/v1} \texttt{NodePool} limits and weights in milliseconds via HiGHS. Evaluated with fixed hyperparameters (zero per-dataset retuning) across four real production workloads from the Numenta Anomaly Benchmark (16,128 AWS CloudWatch intervals plus 15,902 viral flash-crowd intervals with $22.65\times$ peak-to-mean surges), 30-seed Monte Carlo trials, five-way architectural ablations, and multi-region catalogs up to $K=210$ pools, \textsc{AegisScale} cuts annualized compute spend by $34.5\%$--$38.7\%$ relative to equal-SLA On-Demand fleets ($p = 1.86 \times 10^{-9}$, paired Wilcoxon test) while sustaining $99.17\%$--$99.55\%$ $\mathrm{P99}$ SLA continuity and empirical conformal miscoverage within $0.012\%$ of theory.
+Cloud-native infrastructure teams face a persistent trade-off between compute expenditure and tail-latency service-level agreement (SLA) continuity. Provisioning exclusively On-Demand virtual machines guarantees capacity availability at a $2.5\times$--$5\times$ price premium, whereas naive adoption of revocable Spot instances---even behind modern bin-packing node provisioners such as Kubernetes Karpenter---exposes workloads to correlated capacity recalls across Availability Zones (AZs) and processor families, triggering severe $\mathrm{P99}$ latency violations during non-stationary traffic surges. We present \textsc{AegisScale}, a trace-validated mathematical control architecture for Amazon EC2 and EKS/Karpenter clusters that couples distribution-free online statistical learning, heavy-traffic queueing bounds, two-dimensional container bin-packing, and risk-averse discrete portfolio optimization. First, Adaptive Conformal Inference (ACI) wraps a strictly causal, scale-invariant harmonic Recursive Least Squares (RLS) filter to provide finite-sample upper demand coverage under arbitrary distribution shifts. Second, a Kingman--Sakasegawa $G/G/c$ heavy-traffic diffusion law maps conformal arrival envelopes and node cold-start lead-time buffers into minimum safe compute and pod replica counts, reducing analytically to the closed-form $M/M/1$ waiting quantile at $c=1$. Third, a three-factor Gaussian copula models correlated $(\text{AZ}, \text{family})$ Spot recalls within an auxiliary-free Rockafellar--Uryasev Conditional Value-at-Risk ($\mathrm{CVaR}_\beta$) Mixed-Integer Linear Program (MILP) that reconciles declarative \texttt{karpenter.sh/v1} \texttt{NodePool} limits and weights via HiGHS. Evaluated with fixed hyperparameters (zero per-dataset retuning) and strictly causal prefix normalization across five real public workloads---four Numenta Anomaly Benchmark traces plus the October 2024 Microsoft Azure Multimodal LLM Inference trace ($10^6$ requests)---as well as $30$ disjoint real rolling windows, unconfounded six-way ablations, Spot price sensitivity sweeps ($0.7\times$--$1.6\times$), and a three-region 2D Kubernetes benchmark, \textsc{AegisScale} reduces annualized compute spend by $35.0\%$--$37.1\%$ versus equal-SLA On-Demand ($17.2\%$--$35.5\%$ versus a 1-year AWS Compute Savings Plan + On-Demand baseline; $p = 1.86 \times 10^{-9}$, paired Wilcoxon test) while sustaining $99.0\%$--$100.0\%$ $\mathrm{P99}$ SLA continuity and honest finite-cap conformal miscoverage of $1.503\%$--$1.513\%$ against a $1.500\%$ target. We also report candid operational boundaries, including Savings Plan break-even thresholds under elevated Spot prices ($\ge 1.45\times$) and cold-start degradation when node boot lag reaches $\ge 120\,\mathrm{s}$ under Spot eviction.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -35,31 +35,31 @@ Cloud FinOps, Kubernetes Autoscaling, Karpenter, EC2 Spot Instances, Adaptive Co
 
 \section{Introduction}
 
-\IEEEPARstart{M}{odern} cloud-native platforms execute latency-critical microservices atop heterogeneous virtual machine markets where identical physical processors are offered under two contrasting contracts: guaranteed \emph{On-Demand} instances billed at fixed hourly rates, and revocable \emph{Spot} (or preemptible) instances discounted by $60\%$--$85\%$ subject to a two-minute provider reclamation warning~\cite{sharma2016flint,ambati2020providing}. For enterprise engineering organizations, cloud compute represents one of the largest operational expenditures, yet exploiting Spot discounts safely remains an unresolved control problem.
+\IEEEPARstart{M}{odern} cloud-native platforms execute latency-critical microservices atop heterogeneous virtual machine markets where identical physical processors are offered under contrasting contracts: guaranteed \emph{On-Demand} instances billed at fixed hourly rates, 1-to-3-year committed \emph{Savings Plans} offering $25\%$--$40\%$ discounts on steady-state base load, and revocable \emph{Spot} (or preemptible) instances discounted by $60\%$--$85\%$ subject to a two-minute provider reclamation warning~\cite{sharma2016flint,ambati2020providing}. Exploiting Spot discounts without violating tail-latency SLAs remains an open control problem.
 
-Existing autoscaling and node-provisioning stacks fail along two structural axes. First, reactive workload autoscalers---including the Kubernetes Horizontal Pod Autoscaler (HPA) and AWS Target Tracking---adjust capacity only after trailing utilization metrics breach static thresholds (typically $50\%$--$60\%$ CPU). Because provisioning and booting new Kubernetes worker nodes requires $45$--$120\,\mathrm{s}$, reactive controllers lag behind flash-crowd arrivals, inducing severe queueing backlog spikes. Second, modern Kubernetes node provisioners such as \emph{Karpenter} (\texttt{karpenter.sh/v1}) excel at reactive multi-dimensional pod bin-packing once pods enter the \texttt{Pending} state, yet possess neither lookahead traffic envelopes nor a joint statistical model of correlated Spot interruptions. When cloud capacity tightens within an Availability Zone or across a popular CPU generation (e.g., AWS Graviton3 \texttt{c7g}/\texttt{m7g}), unhedged Spot fleets experience simultaneous multi-node terminations that overwhelm static \texttt{NodePool} priority weights.
+Existing autoscaling and node-provisioning stacks exhibit two structural limitations. First, reactive workload autoscalers---including the Kubernetes Horizontal Pod Autoscaler (HPA) and AWS Target Tracking---adjust capacity only after trailing utilization metrics breach static thresholds (typically $50\%$--$60\%$ CPU). Because provisioning and booting new Kubernetes worker nodes requires $45$--$120\,\mathrm{s}$, reactive controllers lag behind flash-crowd arrivals, inducing severe queueing backlog spikes. Second, modern Kubernetes node provisioners such as \emph{Karpenter} (\texttt{karpenter.sh/v1}) excel at reactive multi-dimensional pod bin-packing once pods enter the \texttt{Pending} state, yet possess neither lookahead traffic envelopes nor a joint statistical model of correlated Spot interruptions. When cloud capacity tightens within an Availability Zone or across a popular CPU generation (e.g., AWS Graviton3 \texttt{c7g}/\texttt{m7g}), unhedged Spot fleets experience simultaneous multi-node terminations that break SLAs ($87\%$--$97\%$ continuity in our experiments).
 
-To bridge this gap, we design, analyze, and implement \textsc{AegisScale}, a closed-loop mathematical control plane for both EC2 Auto Scaling Groups and Kubernetes/Karpenter clusters. Specifically, this paper makes four contributions:
+To address both limitations, we design, analyze, and evaluate \textsc{AegisScale}, a closed-loop mathematical control plane for EC2 Auto Scaling Groups and Kubernetes/Karpenter clusters. Specifically, this preprint makes four contributions:
 \begin{enumerate}
-    \item \textbf{Distribution-Free Online Demand Envelopes:} We pair a scale-invariant harmonic-autoregressive Recursive Least Squares (RLS) filter with Gibbs and Cand\`es' Adaptive Conformal Inference (ACI)~\cite{gibbs2021adaptive,angelopoulos2023conformal}, proving deterministic finite-sample miscoverage bounds $|T^{-1}\sum_{t=1}^T \mathrm{err}_t - \alpha_{\mathrm{target}}| \le \frac{1+2\gamma}{\gamma T}$ over arbitrary non-stationary bounded traffic streams (Theorem~\ref{thm:aci}).
-    \item \textbf{$M/M/1$-Exact $G/G/c$ Tail Sizing \& 2D Pod Packing:} Combining Sakasegawa's queueing probability~\cite{sakasegawa1977approximation} with Kingman's heavy-traffic exponential waiting law~\cite{kingman1961single,whitt1993approximations}, we establish strict monotonicity and exact $M/M/1$ closed-form reduction (Lemma~\ref{lem:ggc}), extending capacity translation to two-dimensional $(\text{vCPU}, \text{GiB})$ Kubernetes pod bin-packing with DaemonSet overhead and node cold-start surge buffering.
-    \item \textbf{Auxiliary-Free Correlated Spot $\mathrm{CVaR}_\beta$ MILP:} Using a three-factor Gaussian copula~\cite{li2000default} with antithetic variates to capture shared AZ and instance-family recall shocks, we prove that constraining the Rockafellar--Uryasev threshold $\eta \ge 0$ linearizes non-negative capacity shortfall $\max(0, C_{\mathrm{req}} - C_{\mathrm{surv}})$ without $S$ intermediate slack variables (Lemma~\ref{lem:cvar}), solving globally in $42$--$63\,\mathrm{ms}$ for regional catalogs and $<330\,\mathrm{ms}$ up to $K=210$ pools via HiGHS~\cite{huangfu2018parallelizing}.
-    \item \textbf{Multi-Dataset Statistical \& Karpenter v1 Validation:} We implement declarative \texttt{karpenter.sh/v1} \texttt{NodePool} and \texttt{EC2NodeClass} synthesis alongside AWS CDK v2 infrastructure, and validate a single fixed hyperparameter configuration across four diverse real-world production traces, 30-seed Wilcoxon signed-rank tests ($p = 1.86 \times 10^{-9}$)~\cite{wilcoxon1945individual}, five-way ablations, and cold-start delay stress sweeps.
+    \item \textbf{Strictly Causal Online Demand Envelopes:} We pair a scale-invariant harmonic-autoregressive Recursive Least Squares (RLS) filter (using strictly lagged scale $\sigma_{t-1}$) with Gibbs and Cand\`es' Adaptive Conformal Inference (ACI)~\cite{gibbs2021adaptive,angelopoulos2023conformal}, stating the exact unclipped finite-sample bound $|T^{-1}\sum_{t=1}^T \mathrm{err}_t - \alpha_{\mathrm{target}}| \le \frac{1+\gamma}{\gamma T}$ (Theorem~\ref{thm:aci}) and evaluating honest finite-cap deployment miscoverage ($1.503\%$--$1.513\%$).
+    \item \textbf{$M/M/1$-Exact $G/G/c$ Tail Sizing \& 2D Pod Packing:} Combining Sakasegawa's queueing probability~\cite{sakasegawa1977approximation} with Kingman's heavy-traffic exponential waiting law~\cite{kingman1961single,whitt1993approximations}, we prove strict monotonicity, boundary limits, and exact $M/M/1$ closed-form reduction (Lemma~\ref{lem:ggc}), extending capacity translation to two-dimensional $(\text{vCPU}, \text{GiB})$ Kubernetes pod bin-packing with DaemonSet overhead and node cold-start surge buffering.
+    \item \textbf{Auxiliary-Free Correlated Spot $\mathrm{CVaR}_\beta$ MILP:} Using a three-factor Gaussian copula~\cite{li2000default} with antithetic variates to capture shared AZ and instance-family recall shocks, we prove that constraining the Rockafellar--Uryasev threshold $\eta \ge 0$ linearizes non-negative capacity shortfall $\max(0, C_{\mathrm{req}} - C_{\mathrm{surv}})$ without $S$ intermediate slack variables (Lemma~\ref{lem:cvar}), solving globally in $69$--$100\,\mathrm{ms}$ median for regional catalogs ($K=21$) and $467\,\mathrm{ms}$ median ($1,406\,\mathrm{ms}$ P99) at $K=210$ pools via HiGHS~\cite{huangfu2018parallelizing}.
+    \item \textbf{Audited Multi-Dataset, Savings-Plan, Sensitivity, \& 2D Karpenter Validation:} We evaluate a single locked policy across five real traces---four Numenta NAB workloads~\cite{lavin2015evaluating} plus the October 2024 Microsoft Azure Multimodal LLM Inference trace~\cite{patel2024splitwise}---benchmarking against both On-Demand and a 1-year Compute Savings Plan baseline, $30$ disjoint real rolling windows with exact Student-$t$ intervals and paired Wilcoxon tests~\cite{wilcoxon1945individual}, unconfounded six-way ablations, Spot price multiplier sweeps ($0.7\times$--$1.6\times$), true $60\,\mathrm{s}$-resolution cold-start lag with Spot eviction, and an empirical three-region 2D Kubernetes/Karpenter study.
 \end{enumerate}
 
 \section{Related Work}
 
 \subsection{Reactive and Predictive Cloud Autoscaling}
-Industrial cluster autoscalers such as Google Autopilot~\cite{rzadca2020autopilot} and Kubernetes HPA rely on trailing sliding-window resource percentiles or reactive threshold rules. While Autopilot reduces manual vertical sizing, reactive horizontal controllers suffer unavoidable latency breaches when arrival rates jump faster than node boot times ($\tau_{\mathrm{boot}} \ge 60\,\mathrm{s}$). Deep probabilistic forecasters such as DeepAR~\cite{salinas2020deepar} learn parametric likelihoods over historical traces, but require offline GPU training and lose calibration validity under sudden distribution shifts (e.g., viral flash crowds or routing failovers). By contrast, our RLS-ACI layer operates online in $O(d^2)$ time per step with zero offline training and distribution-free finite-sample guarantees~\cite{gibbs2021adaptive}.
+Industrial cluster autoscalers such as Google Autopilot~\cite{rzadca2020autopilot} and Kubernetes HPA rely on trailing sliding-window resource percentiles or reactive threshold rules. While Autopilot reduces manual vertical sizing, reactive horizontal controllers suffer latency breaches when arrival rates jump faster than node boot times. Deep probabilistic forecasters such as DeepAR~\cite{salinas2020deepar} learn parametric likelihoods over historical traces, but require offline GPU training and lose calibration validity under sudden distribution shifts. By contrast, our RLS-ACI layer operates online in $O(d^2)$ time per step with zero offline training and distribution-free finite-sample guarantees~\cite{gibbs2021adaptive}.
 
 \subsection{Spot Instance Harvesting and Karpenter Provisioning}
 Prior systems research on transient servers, including Flint~\cite{sharma2016flint} and Harvest VMs~\cite{ambati2020providing}, mitigates single-node Spot revocations via checkpointing, live migration, or heuristic pool diversification. In Kubernetes ecosystems, Karpenter replaces static node groups by selecting low-cost instance types matching pending pod requests under \texttt{price-capacity-optimized} heuristics. However, Karpenter evaluates node claims greedily at pod-pending time without modeling cross-pool joint tail risk ($\mathrm{CVaR}_\beta$) across Availability Zones and processor families, nor pre-warming replicas ahead of non-stationary bursts. \textsc{AegisScale} complements Karpenter by acting as a higher-level portfolio optimizer that dynamically bounds \texttt{NodePool} CPU/memory ceilings, priority weights, and proactive replica counts.
 
 \section{Unified Mathematical Formulation}
 
-\subsection{Layer 1: Scale-Invariant RLS and Adaptive Conformal Inference}
+\subsection{Layer 1: Strictly Causal RLS and Adaptive Conformal Inference}
 
-Let $\{D_t\}_{t=1}^T \subset \mathbb{R}_{\ge 0}$ denote incoming request arrival rates (requests/sec) observed at discrete control intervals of length $\Delta\tau$. To achieve complete invariance across workload magnitudes ($10^1$ to $10^6$ RPS), we maintain an exponentially weighted scale $\sigma_t = 0.95\sigma_{t-1} + 0.05\max(1, D_t)$ and model normalized increments $\Delta_t = (D_t - D_{t-1})/\sigma_{t-1}$ using the $(p+5)$-dimensional harmonic-autoregressive feature vector
+Let $\{D_t\}_{t=1}^T \subset \mathbb{R}_{\ge 0}$ denote incoming request arrival rates (requests/sec) observed at discrete control intervals of length $\Delta\tau$. To achieve scale invariance across workload magnitudes ($10^1$ to $10^6$ RPS) without lookahead leakage, we maintain a strictly lagged exponentially weighted scale $\sigma_t = 0.95\sigma_{t-1} + 0.05\max(1, D_t)$ updated \emph{after} computing normalized increments $\Delta_t = (D_t - D_{t-1})/\sigma_{t-1}$ and the $(p+5)$-dimensional harmonic-autoregressive feature vector
 \begin{equation}
 \begin{aligned}
     \phi_t = \Big[1, \; \Delta_{t-p}, \dots, \Delta_{t-1}, \; &\sin\!\left(\tfrac{2\pi t}{P}\right), \cos\!\left(\tfrac{2\pi t}{P}\right), \\
@@ -73,33 +73,35 @@ updated online via forgetting-factor Recursive Least Squares ($\lambda_{\mathrm{
 \end{equation}
 with $P_t = \lambda_{\mathrm{rls}}^{-1}(P_{t-1} - k_t\phi_t^\top P_{t-1})$, producing one-step point forecast $\hat{D}_{t|t-1} = \max(0, D_{t-1} + \sigma_{t-1}\,\mathrm{clip}(\theta_{t-1}^\top \phi_t, -0.75, 0.75))$.
 
-Let $r_i = D_i - \hat{D}_{i|i-1}$ denote signed conformity residuals in a sliding calibration window $\mathcal{W}_t$ of length $W$. Define the finite-sample empirical quantile $\hat{Q}_{1-\alpha}(\mathcal{W}_t)$ at level $\lceil(|\mathcal{W}_t|+1)(1-\alpha)\rceil / |\mathcal{W}_t|$, with boundary conventions $\hat{Q}_{1-\alpha} = +\infty$ for $\alpha \le 0$ and $\hat{Q}_{1-\alpha} = -\infty$ for $\alpha \ge 1$. Setting conformal demand upper bound $\hat{U}_t(\alpha_t) = \hat{D}_{t|t-1} + \hat{Q}_{1-\alpha_t}(\mathcal{W}_t)$ and miscoverage indicator $\mathrm{err}_t = \mathbb{I}\{D_t > \hat{U}_t(\alpha_t)\}$, we update the unclipped dual parameter~\cite{gibbs2021adaptive}:
+Let $r_i = D_i - \hat{D}_{i|i-1}$ denote signed conformity residuals in a sliding calibration window $\mathcal{W}_t$ of length $W$. Define the finite-sample empirical quantile $\hat{Q}_{1-\alpha}(\mathcal{W}_t)$ at level $\lceil(|\mathcal{W}_t|+1)(1-\alpha)\rceil / |\mathcal{W}_t|$, with theoretical boundary conventions $\hat{Q}_{1-\alpha} = +\infty$ for $\alpha \le 0$ and $\hat{Q}_{1-\alpha} = -\infty$ for $\alpha \ge 1$. Setting conformal demand upper bound $\hat{U}_t(\alpha_t) = \hat{D}_{t|t-1} + \hat{Q}_{1-\alpha_t}(\mathcal{W}_t)$ and miscoverage indicator $\mathrm{err}_t = \mathbb{I}\{D_t > \hat{U}_t(\alpha_t)\}$, we update the unclipped dual parameter~\cite{gibbs2021adaptive}:
 \begin{equation}\label{eq:aci}
     \alpha_{t+1} = \alpha_t + \gamma(\alpha_{\mathrm{target}} - \mathrm{err}_t), \quad \gamma > 0, \; \alpha_1 = \alpha_{\mathrm{target}}.
 \end{equation}
 
 \begin{theorem}[Finite-Sample Non-Stationary Coverage]\label{thm:aci}
-For any bounded deterministic or adversarial workload sequence $\{D_t\}_{t=1}^T$, iterate~\eqref{eq:aci} satisfies $\alpha_t \in [-\gamma, 1 + \gamma]$ for all $t \ge 1$, and the empirical under-provisioning rate obeys
+For any bounded deterministic or adversarial workload sequence $\{D_t\}_{t=1}^T$ under the unclipped boundary convention $\hat{Q}_{1-\alpha} = +\infty$ ($\alpha \le 0$) and $-\infty$ ($\alpha \ge 1$), iterate~\eqref{eq:aci} satisfies $\alpha_t \in [-\gamma, 1 + \gamma]$ for all $t \ge 1$, and the empirical under-provisioning rate obeys
 \begin{equation}
-    \left| \frac{1}{T}\sum_{t=1}^T \mathrm{err}_t - \alpha_{\mathrm{target}} \right| \le \frac{1 + 2\gamma}{\gamma T}.
+    \left| \frac{1}{T}\sum_{t=1}^T \mathrm{err}_t - \alpha_{\mathrm{target}} \right| \le \frac{1 + \gamma}{\gamma T}.
 \end{equation}
 \end{theorem}
 \begin{IEEEproof}
-Whenever $\alpha_t \le 0$, $\hat{U}_t(\alpha_t) = +\infty \implies \mathrm{err}_t = 0$, giving $\alpha_{t+1} = \alpha_t + \gamma\alpha_{\mathrm{target}} > \alpha_t$; since any step decreases $\alpha$ by at most $\gamma(1-\alpha_{\mathrm{target}}) < \gamma$, induction yields $\alpha_t \ge -\gamma$. Symmetrically, whenever $\alpha_t \ge 1$, $\hat{U}_t(\alpha_t) = -\infty \implies \mathrm{err}_t = 1$, giving $\alpha_{t+1} = \alpha_t - \gamma(1-\alpha_{\mathrm{target}}) < \alpha_t$ and $\alpha_t \le 1 + \gamma$. Summing~\eqref{eq:aci} from $t=1$ to $T$ telescopes to $\alpha_{T+1} - \alpha_1 = \gamma\sum_{t=1}^T (\alpha_{\mathrm{target}} - \mathrm{err}_t)$. Dividing by $\gamma T$ and noting $|\alpha_{T+1} - \alpha_1| \le 1 + 2\gamma$ establishes the bound.
+Whenever $\alpha_t \le 0$, $\hat{U}_t(\alpha_t) = +\infty \implies \mathrm{err}_t = 0$, so $\alpha_{t+1} = \alpha_t + \gamma\alpha_{\mathrm{target}} > \alpha_t$; since any step decreases $\alpha$ by at most $\gamma(1-\alpha_{\mathrm{target}}) < \gamma$, induction gives $\alpha_t \ge -\gamma$. Symmetrically, whenever $\alpha_t \ge 1$, $\hat{U}_t(\alpha_t) = -\infty \implies \mathrm{err}_t = 1$, giving $\alpha_t \le 1 + \gamma$. Since $\alpha_1 = \alpha_{\mathrm{target}} \in (0, 1)$, we have $|\alpha_{T+1} - \alpha_1| \le \max(\alpha_{\mathrm{target}} + \gamma, 1 + \gamma - \alpha_{\mathrm{target}}) \le 1 + \gamma$. Telescoping~\eqref{eq:aci} yields $\alpha_{T+1} - \alpha_1 = \gamma\sum_{t=1}^T (\alpha_{\mathrm{target}} - \mathrm{err}_t)$; dividing by $\gamma T$ completes the proof.
 \end{IEEEproof}
+
+\emph{Practical Finite-Cap Provisioning:} Physical compute fleets cannot provision infinite capacity when $\alpha_t \le 0$. In production deployment, \textsc{AegisScale} replaces $+\infty$ with a finite fallback envelope $\hat{D}_{t|t-1} + 1.35\max(\mathcal{W}_t, 0.35\sigma_{t-1})$ and scores $\mathrm{err}_t$ \emph{honestly} against this realized finite bound (never against a synthetic $+\infty$). In all empirical experiments below, realized finite-cap miscoverage stays within $0.003\%$--$0.013\%$ of $\alpha_{\mathrm{target}} = 1.500\%$.
 
 \subsection{Layer 2: Kingman--Sakasegawa $G/G/c$ Tail-Latency Sizing}
 
-Given design arrival rate $\hat{\lambda} = \hat{U}_t$, per-server service rate $\mu > 0$, inter-arrival squared coefficient of variation $c_a^2$, and service-time squared coefficient of variation $c_s^2$, let $\rho(c) = \hat{\lambda}/(c\mu) < 1$ for $c > \hat{\lambda}/\mu$. Combining Sakasegawa's multi-server delay probability $P_{\mathrm{wait}}(c) = \rho(c)^{\sqrt{2(c+1)}-1}$~\cite{sakasegawa1977approximation} with Kingman's heavy-traffic mean queueing delay $\mathbb{E}[W_q(c)] = \frac{c_a^2 + c_s^2}{2}\frac{\rho(c)^{\sqrt{2(c+1)}-1}}{c\mu(1-\rho(c))}$~\cite{kingman1961single,whitt1993approximations}, conditional mean wait given queueing simplifies to $\mathbb{E}[W_q(c) \mid W_q > 0] = \frac{c_a^2 + c_s^2}{2c\mu(1-\rho(c))}$. Under heavy-traffic exponential tail decay, the $(1-\delta)$-quantile waiting time is $W_{q,1-\delta}(c) = 0$ if $P_{\mathrm{wait}}(c) \le \delta$, and otherwise:
+Given design arrival rate $\hat{\lambda} = \max(\hat{U}_{t+1|t}, D_t)$, per-server service rate $\mu > 0$, inter-arrival squared coefficient of variation $c_a^2$, and service-time squared coefficient of variation $c_s^2$, let $\rho(c) = \hat{\lambda}/(c\mu) < 1$ for $c > \hat{\lambda}/\mu$. Combining Sakasegawa's multi-server delay probability $P_{\mathrm{wait}}(c) = \rho(c)^{\sqrt{2(c+1)}-1}$~\cite{sakasegawa1977approximation} with Kingman's heavy-traffic mean queueing delay $\mathbb{E}[W_q(c)] = \frac{c_a^2 + c_s^2}{2}\frac{\rho(c)^{\sqrt{2(c+1)}-1}}{c\mu(1-\rho(c))}$~\cite{kingman1961single,whitt1993approximations}, conditional mean wait given queueing simplifies to $\mathbb{E}[W_q(c) \mid W_q > 0] = \frac{c_a^2 + c_s^2}{2c\mu(1-\rho(c))}$. Under heavy-traffic exponential tail decay, the $(1-\delta)$-quantile waiting time is $W_{q,1-\delta}(c) = 0$ if $P_{\mathrm{wait}}(c) \le \delta$, and otherwise:
 \begin{equation}\label{eq:ggc_quantile}
     W_{q, 1-\delta}(c) = \left(\frac{c_a^2 + c_s^2}{2}\right)\frac{\ln\!\big(P_{\mathrm{wait}}(c)/\delta\big)}{c\mu(1-\rho(c))}.
 \end{equation}
 
-\begin{lemma}[Exact $M/M/1$ Reduction \& Global Uniqueness]\label{lem:ggc}
-At $c=1$ and $c_a^2 = c_s^2 = 1$, Eq.~\eqref{eq:ggc_quantile} reduces identically to the exact closed-form stationary $M/M/1$ waiting quantile $W_{q,1-\delta}(1) = \max(0, \ln(\rho/\delta)/[\mu(1-\rho)])$. Moreover, for any $c_a^2 + c_s^2 > 0$, $W_{q,1-\delta}(c)$ is continuous and strictly decreasing wherever positive on $(\hat{\lambda}/\mu, \infty)$, guaranteeing a unique root $C_{\mathrm{req}}$ to $W_{q,1-\delta}(c) \le \tau_{\mathrm{SLA}}$.
+\begin{lemma}[Exact $M/M/1$ Reduction \& Unique Sizing Root]\label{lem:ggc}
+At $c=1$ and $c_a^2 = c_s^2 = 1$, Eq.~\eqref{eq:ggc_quantile} reduces identically to the exact stationary $M/M/1$ waiting quantile $W_{q,1-\delta}(1) = \max(0, \ln(\rho/\delta)/[\mu(1-\rho)])$. Moreover, for any $\hat{\lambda}, \mu, \tau_{\mathrm{SLA}} > 0$, $\delta \in (0,1)$, and $c_a^2 + c_s^2 > 0$, $W_{q,1-\delta}(c)$ satisfies $\lim_{c \downarrow \hat{\lambda}/\mu} W_{q,1-\delta}(c) = +\infty$ and $W_{q,1-\delta}(c) = 0$ for sufficiently large $c$, and is continuous and strictly decreasing wherever positive on $(\hat{\lambda}/\mu, \infty)$, guaranteeing a unique root $C_{\mathrm{req}} > \hat{\lambda}/\mu$ to $W_{q,1-\delta}(c) = \tau_{\mathrm{SLA}}$ (found to $10^{-6}$ precision via bisection).
 \end{lemma}
 \begin{IEEEproof}
-At $c=1$, $\sqrt{2(1+1)}-1 = 1 \implies P_{\mathrm{wait}}(1) = \rho$, recovering the exact $M/M/1$ tail distribution. For $c > \hat{\lambda}/\mu$, $c\mu(1-\rho(c)) = c\mu - \hat{\lambda}$ is strictly increasing in $c$, while $\rho(c) \in (0, 1)$ is strictly decreasing and $\sqrt{2(c+1)}-1$ is strictly increasing, rendering $P_{\mathrm{wait}}(c)$ strictly decreasing. Thus $W_{q,1-\delta}(c)$ is strictly decreasing on $\{c : P_{\mathrm{wait}}(c) > \delta\}$.
+At $c=1$, $\sqrt{2(1+1)}-1 = 1 \implies P_{\mathrm{wait}}(1) = \rho$, recovering the exact $M/M/1$ tail distribution. For $c > \hat{\lambda}/\mu$, $c\mu(1-\rho(c)) = c\mu - \hat{\lambda}$ increases strictly from $0^+$ to $+\infty$, while $\rho(c) \in (0,1)$ decreases strictly to $0^+$ and $\sqrt{2(c+1)}-1$ increases strictly, so $P_{\mathrm{wait}}(c)$ decreases strictly from $1^-$ to $0^+$. Hence $W_{q,1-\delta}(c)$ diverges as $c \downarrow \hat{\lambda}/\mu$, reaches $0$ at $P_{\mathrm{wait}}(c) = \delta$, and is strictly decreasing wherever positive, ensuring a unique solution to $W_{q,1-\delta}(c) = \tau_{\mathrm{SLA}}$ by the Intermediate Value Theorem.
 \end{IEEEproof}
 
 \subsection{Layer 3: Correlated Spot Copula and Exact CVaR MILP}
@@ -128,37 +130,49 @@ Since $L_s(x) \ge 0$ for all $s$, $\eta^* = \mathrm{VaR}_\beta(L(x)) \ge 0$. For
 
 \begin{table*}[t]
 \centering
-\caption{Experiment A: Zero-Retuning Multi-Dataset Generalization Across Four Real Production Traces (Mean Scaled to 3,200 RPS)}
+\caption{Experiment A: Zero-Retuning Generalization Across Five Real Traces (600-Step Windows, Causal Prefix Normalization)}
 \label{tab:multidata}
-\resizebox{0.98\textwidth}{!}{%
-\begin{tabular}{llccccc}
+\resizebox{0.99\textwidth}{!}{%
+\begin{tabular}{llcccccc}
 \hline
-\textbf{Real Production Dataset} & \textbf{Controller Strategy} & \textbf{Annualized Cost} & \textbf{Savings vs.\ Iso-OD} & \textbf{P99 SLA Continuity} & \textbf{Total (Storm) Breaches} & \textbf{Mean P99 Wait} \\
+\textbf{Real Production Dataset} & \textbf{Controller Strategy} & \textbf{Annual Cost} & \textbf{vs.\ Iso-OD} & \textbf{vs.\ 1-Yr SP} & \textbf{P99 Cont.} & \textbf{Breaches (Storm)} & \textbf{Unstable \% / Cap Wait} \\
 \hline
-\textbf{1.\ AWS-ELB-Web}           & Reactive HPA (55\% CPU)     & \$15,321 / yr & --- \emph{(Fails SLA)} & 67.00\% & 198 (15) & 1576.9 ms \\
-\emph{(4,032 rows, $4.77\times$ burst)} & Iso-SLA 100\% On-Demand     & \$36,375 / yr & 0.00\%                 & 98.67\% & 8 (3)    & 50.2 ms \\
-                                  & Greedy Cheapest Spot        & \$13,344 / yr & 63.32\%                & 90.67\% & 56 (20)  & 442.4 ms \\
-                                  & Static 30/70 Mixed Spot     & \$19,155 / yr & 47.34\%                & 98.00\% & 12 (7)   & 83.6 ms \\
-                                  & \textbf{AegisScale (Full)}  & \textbf{\$23,015 / yr} & \textbf{36.73\%} & \textbf{99.17\%} & \textbf{5 (3)} & \textbf{41.7 ms} \\
+\textbf{1.\ AWS-ELB-Web}           & Reactive HPA (55\% CPU)       & \$17,513 & --- \emph{(Fails)} & --- \emph{(Fails)} & 67.00\% & 198 (14) & 31.67\% / 1586.6 ms \\
+\emph{(4,032 rows, offset 0,}      & Iso-SLA 100\% On-Demand       & \$41,086 & 0.00\%             & -4.11\%            & 98.50\% & 9 (0)    & 1.50\% / 75.1 ms \\
+\emph{$4.77\times$ burst)}         & 1-Yr Savings Plan + OD        & \$39,466 & 3.94\%             & 0.00\%             & 98.50\% & 9 (0)    & 1.50\% / 75.1 ms \\
+                                   & Greedy Spot (Karpenter-style) & \$14,982 & 63.53\%            & 62.04\%            & 89.67\% & 62 (23)  & 10.00\% / 500.3 ms \\
+                                   & Static 30/70 (Warn-Aware)     & \$21,680 & 47.23\%            & 45.07\%            & 98.17\% & 11 (0)   & 1.67\% / 83.5 ms \\
+                                   & \textbf{AegisScale (Full)}    & \textbf{\$25,942} & \textbf{36.86\%} & \textbf{34.27\%} & \textbf{99.00\%} & \textbf{6 (0)} & \textbf{1.00\% / 50.0 ms} \\
 \hline
-\textbf{2.\ AWS-EC2-Network}       & Reactive HPA (55\% CPU)     & \$15,234 / yr & --- \emph{(Fails SLA)} & 82.17\% & 107 (8)  & 885.5 ms \\
-\emph{(4,032 rows, $5.33\times$ burst)} & Iso-SLA 100\% On-Demand     & \$51,599 / yr & 0.00\%                 & 99.67\% & 2 (1)    & 17.1 ms \\
-                                  & Greedy Cheapest Spot        & \$18,617 / yr & 63.92\%                & 97.50\% & 15 (5)   & 118.3 ms \\
-                                  & Static 30/70 Mixed Spot     & \$27,104 / yr & 47.47\%                & 97.50\% & 15 (5)   & 117.1 ms \\
-                                  & \textbf{AegisScale (Full)}  & \textbf{\$32,458 / yr} & \textbf{37.10\%} & \textbf{99.50\%} & \textbf{3 (0)} & \textbf{25.0 ms} \\
+\textbf{2.\ AWS-EC2-Network}       & Reactive HPA (55\% CPU)       & \$14,494 & --- \emph{(Fails)} & --- \emph{(Fails)} & 82.17\% & 107 (8)  & 17.50\% / 881.9 ms \\
+\emph{(4,032 rows, offset 0,}      & Iso-SLA 100\% On-Demand       & \$46,979 & 0.00\%             & -2.66\%            & 99.50\% & 3 (0)    & 0.33\% / 17.2 ms \\
+\emph{$5.33\times$ burst)}         & 1-Yr Savings Plan + OD        & \$45,764 & 2.59\%             & 0.00\%             & 99.50\% & 3 (0)    & 0.33\% / 17.2 ms \\
+                                   & Greedy Spot (Karpenter-style) & \$17,126 & 63.54\%            & 62.58\%            & 97.33\% & 16 (6)   & 2.67\% / 133.8 ms \\
+                                   & Static 30/70 (Warn-Aware)     & \$24,807 & 47.20\%            & 45.79\%            & 98.00\% & 12 (1)   & 1.83\% / 92.5 ms \\
+                                   & \textbf{AegisScale (Full)}    & \textbf{\$29,535} & \textbf{37.13\%} & \textbf{35.46\%} & \textbf{99.33\%} & \textbf{4 (0)} & \textbf{0.50\% / 25.1 ms} \\
 \hline
-\textbf{3.\ AWS-RDS-Compute}       & Reactive HPA (55\% CPU)     & \$15,342 / yr & -13.75\%               & 99.83\% & 1 (1)    & 8.5 ms \\
-\emph{(4,032 rows, $2.37\times$ step)} & Iso-SLA 100\% On-Demand     & \$13,487 / yr & 0.00\%                 & 99.67\% & 2 (1)    & 11.5 ms \\
-                                  & Greedy Cheapest Spot        & \$5,505 / yr  & 59.18\%                & 88.17\% & 71 (31)  & 593.1 ms \\
-                                  & Static 30/70 Mixed Spot     & \$7,334 / yr  & 45.62\%                & 86.33\% & 82 (38)  & 537.9 ms \\
-                                  & \textbf{AegisScale (Full)}  & \textbf{\$8,842 / yr}  & \textbf{34.45\%} & \textbf{99.17\%} & \textbf{5 (2)} & \textbf{25.6 ms} \\
+\textbf{3.\ AWS-RDS-Compute}       & Reactive HPA (55\% CPU)       & \$26,435 & -14.00\%           & -29.88\%           & 99.83\% & 1 (0)    & 0.17\% / 8.3 ms \\
+\emph{(4,032 rows, offset 2800,}   & Iso-SLA 100\% On-Demand       & \$23,188 & 0.00\%             & -13.93\%           & 99.33\% & 4 (0)    & 0.33\% / 18.8 ms \\
+\emph{$2.37\times$ step)}          & 1-Yr Savings Plan + OD        & \$20,352 & 12.23\%            & 0.00\%             & 99.33\% & 4 (0)    & 0.33\% / 18.8 ms \\
+                                   & Greedy Spot (Karpenter-style) & \$8,442  & 63.59\%            & 58.52\%            & 87.33\% & 76 (32)  & 12.33\% / 618.3 ms \\
+                                   & Static 30/70 (Warn-Aware)     & \$12,371 & 46.65\%            & 39.22\%            & 90.83\% & 55 (5)   & 6.50\% / 328.9 ms \\
+                                   & \textbf{AegisScale (Full)}    & \textbf{\$14,832} & \textbf{36.04\%} & \textbf{27.13\%} & \textbf{99.17\%} & \textbf{5 (1)} & \textbf{0.83\% / 42.0 ms} \\
 \hline
-\textbf{4.\ Viral-Flash-Traffic}   & Reactive HPA (55\% CPU)     & \$15,348 / yr & --- \emph{(Fails SLA)} & 94.33\% & 34 (4)   & 186.0 ms \\
-\emph{(15,902 rows, $22.65\times$ surge)} & Iso-SLA 100\% On-Demand   & \$51,612 / yr & 0.00\%                 & 98.33\% & 10 (3)   & 67.6 ms \\
-                                  & Greedy Cheapest Spot        & \$18,620 / yr & 63.92\%                & 88.17\% & 71 (31)  & 583.5 ms \\
-                                  & Static 30/70 Mixed Spot     & \$27,087 / yr & 47.52\%                & 97.17\% & 17 (9)   & 93.2 ms \\
-                                  & \textbf{AegisScale (Full)}  & \textbf{\$32,601 / yr} & \textbf{36.83\%} & \textbf{99.17\%} & \textbf{5 (3)} & \textbf{33.5 ms} \\
+\textbf{4.\ Viral-Flash-Traffic}   & Reactive HPA (55\% CPU)       & \$16,787 & --- \emph{(Fails)} & --- \emph{(Fails)} & 94.17\% & 35 (5)   & 3.17\% / 163.9 ms \\
+\emph{(15,902 rows, offset 12600,} & Iso-SLA 100\% On-Demand       & \$50,669 & 0.00\%             & -4.99\%            & 98.50\% & 9 (0)    & 1.33\% / 66.8 ms \\
+\emph{$22.65\times$ surge)}        & 1-Yr Savings Plan + OD        & \$48,259 & 4.75\%             & 0.00\%             & 98.50\% & 9 (0)    & 1.33\% / 66.8 ms \\
+                                   & Greedy Spot (Karpenter-style) & \$18,360 & 63.77\%            & 61.96\%            & 88.67\% & 68 (20)  & 10.50\% / 525.6 ms \\
+                                   & Static 30/70 (Warn-Aware)     & \$26,638 & 47.43\%            & 44.80\%            & 98.17\% & 11 (1)   & 1.33\% / 67.0 ms \\
+                                   & \textbf{AegisScale (Full)}    & \textbf{\$31,903} & \textbf{37.04\%} & \textbf{33.89\%} & \textbf{99.50\%} & \textbf{3 (0)} & \textbf{0.50\% / 25.1 ms} \\
 \hline
+\textbf{5.\ Azure-LLM-2024}        & Reactive HPA (55\% CPU)       & \$13,671 & -4.33\%            & -32.90\%           & 98.67\% & 8 (0)    & 0.83\% / 43.0 ms \\
+\emph{(2,016 bins from $10^6$ req,} & Iso-SLA 100\% On-Demand       & \$13,103 & 0.00\%             & -27.38\%           & 99.33\% & 4 (1)    & 0.17\% / 9.8 ms \\
+\emph{Oct 2024, $2.41\times$ diurnal)} & 1-Yr Savings Plan + OD    & \$10,287 & 21.49\%            & 0.00\%             & 99.33\% & 4 (1)    & 0.17\% / 9.8 ms \\
+                                   & Greedy Spot (Karpenter-style) & \$5,128  & 60.87\%            & 50.15\%            & 87.67\% & 74 (33)  & 12.33\% / 617.3 ms \\
+                                   & Static 30/70 (Warn-Aware)     & \$7,103  & 45.79\%            & 30.95\%            & 97.17\% & 17 (4)   & 1.50\% / 78.1 ms \\
+                                   & \textbf{AegisScale (Full)}    & \textbf{\$8,517}  & \textbf{35.00\%} & \textbf{17.20\%} & \textbf{100.00\%} & \textbf{0 (0)} & \textbf{0.00\% / 0.2 ms} \\
+\hline
+\multicolumn{8}{l}{\footnotesize \emph{Note:} Unstable intervals ($\rho \ge 1$) are censored at a $5,000\,\mathrm{ms}$ HTTP gateway timeout for mean capped wait; finite-only mean $\mathrm{P99}$ wait for \textsc{AegisScale} is $0.01$--$0.34\,\mathrm{ms}$.}
 \end{tabular}%
 }
 \end{table*}
@@ -181,57 +195,59 @@ For containerized Kubernetes deployments, each pod replica requests two-dimensio
 \begin{equation}\label{eq:binpack}
     \pi_k = \left\lfloor \min\!\left(\frac{v_k - \delta_{\mathrm{cpu}}}{c_{\mathrm{pod}}}, \; \frac{M_k - \delta_{\mathrm{mem}}}{m_{\mathrm{pod}}}\right) \right\rfloor
 \end{equation}
-pods per node. For memory-intensive inference pods (e.g., $1\,\text{vCPU}, 7\,\text{GiB}$), compute-heavy \texttt{c7g.xlarge} nodes ($4\,\text{vCPU}, 8\,\text{GiB}$) yield $\pi_k = 1$ (stranding $75\%$ of CPU), whereas memory-optimized \texttt{r7g.xlarge} nodes ($4\,\text{vCPU}, 32\,\text{GiB}$) yield $\pi_k = 3$, which Eq.~\eqref{eq:milp} automatically exploits when solved over effective pod-slot capacities $\tilde{v}_k = \pi_k$. To compensate for node boot latency $\tau_{\mathrm{boot}}$ during steep traffic ramps $\dot{\lambda}_t = \max(0, (D_t - D_{t-1})/\Delta\tau)$, design arrival rate is augmented by $\hat{\lambda}_{\mathrm{lead}} = \hat{U}_t + \dot{\lambda}_t \tau_{\mathrm{boot}}$ before computing required replicas $R_{\mathrm{req}} = \lceil C_{\mathrm{req}}(\hat{\lambda}_{\mathrm{lead}}, \mu_{\mathrm{pod}}) \rceil$.
+pods per node. For memory-intensive inference pods ($1\,\text{vCPU}, 7\,\text{GiB}$), compute-heavy \texttt{c7g.xlarge} nodes ($4\,\text{vCPU}, 8\,\text{GiB}$) yield $\pi_k = 1$ ($75\%$ stranded CPU), whereas memory-optimized \texttt{r7g.xlarge} nodes ($4\,\text{vCPU}, 32\,\text{GiB}$) yield $\pi_k = 3$, which Eq.~\eqref{eq:milp} automatically exploits over effective pod-slot capacities $\tilde{v}_k = \pi_k$. To compensate for node boot latency $\tau_{\mathrm{boot}}$ during steep traffic ramps $\dot{\lambda}_t = \max(0, (D_t - D_{t-1})/\Delta\tau)$, design arrival rate is augmented by $\hat{\lambda}_{\mathrm{lead}} = \hat{U}_t + \dot{\lambda}_t \tau_{\mathrm{boot}}$ before computing $R_{\mathrm{req}} = \lceil C_{\mathrm{req}}(\hat{\lambda}_{\mathrm{lead}}, \mu_{\mathrm{pod}}) \rceil$.
 
 \begin{figure*}[t]
     \centering
-    \includegraphics[width=0.95\textwidth]{../docs/figures/multi_dataset_generalization.png}
-    \caption{Zero-retuning multi-dataset empirical generalization across four distinct Numenta NAB production traces: (a) $\mathrm{P99}$ latency SLA continuity (\%) and (b) annualized compute expenditure (\$K USD).}
+    \includegraphics[width=0.96\textwidth]{../docs/figures/multi_dataset_generalization.png}
+    \caption{Zero-retuning multi-dataset empirical generalization across four Numenta NAB workloads plus the October 2024 Microsoft Azure Multimodal LLM Inference trace: (a) $\mathrm{P99}$ latency SLA continuity (\%) and (b) annualized compute expenditure (\$K USD) versus On-Demand and 1-Year Savings Plan baselines.}
     \label{fig:multidata}
 \end{figure*}
 
 \section{AWS EC2 and EKS Karpenter Control Plane}
 
-\textsc{AegisScale} supports two production actuation backends:
+\textsc{AegisScale} implements two production actuation backends:
 \begin{itemize}
-    \item \textbf{AWS EC2 Mixed-Instance Control Loop:} Codified in AWS CDK v2, an EventBridge Scheduler triggers optimization every $60\,\mathrm{s}$ (backed by KMS-encrypted SQS dead-letter queues), while an EventBridge Rule intercepts \texttt{EC2 Spot Instance Interruption Warning} ($2$-minute notice) and \texttt{EC2 Instance Rebalance Recommendation} events to elevate $p_k^{\mathrm{intr}} \ge 0.98$ and evacuate compromised pools in $<100\,\mathrm{ms}$. Launch templates enforce IMDSv2 (\texttt{HttpTokens: required}, hop limit $2$), encrypted GP3 EBS, \texttt{price-capacity-optimized} Spot allocation, Capacity Rebalancing, and ELB health checks, logging state and FinOps audits to Point-in-Time-Recovered DynamoDB.
-    \item \textbf{Declarative EKS \texttt{karpenter.sh/v1} Operator:} Across multi-region catalogs (\texttt{us-east-1}, \texttt{eu-west-1}, \texttt{ap-northeast-1}), the Kubernetes operator translates $x^*$ into declarative \texttt{karpenter.sh/v1} \texttt{NodePool} manifests (\texttt{aegis-ondemand-anchor} plus AZ-partitioned \texttt{aegis-spot-*} pools with proportional \texttt{weight}, exact \texttt{limits.cpu}/\texttt{limits.memory}, \texttt{WhenEmptyOrUnderutilized} consolidation, and allow-listed instance families excluding compromised pools), hardened \texttt{karpenter.k8s.aws/v1} \texttt{EC2NodeClass} specs (\texttt{al2023@latest}), and proactive \texttt{autoscaling/v1} \texttt{Scale} patches.
+    \item \textbf{AWS EC2 Mixed-Instance Control Loop:} Codified in AWS CDK v2, an EventBridge Scheduler triggers optimization every $60\,\mathrm{s}$ (backed by KMS-encrypted SQS dead-letter queues), while an EventBridge Rule intercepts \texttt{EC2 Spot Instance Interruption Warning} ($2$-minute notice) and \texttt{EC2 Instance Rebalance Recommendation} events to elevate $p_k^{\mathrm{intr}} \ge 0.98$ and evacuate compromised pools. Launch templates enforce IMDSv2 (\texttt{HttpTokens: required}, hop limit $2$), encrypted GP3 EBS, \texttt{price-capacity-optimized} Spot allocation, Capacity Rebalancing, and ELB health checks, logging state and FinOps audits to DynamoDB.
+    \item \textbf{Declarative EKS \texttt{karpenter.sh/v1} Operator:} Across multi-region catalogs (\texttt{us-east-1}, \texttt{eu-west-1}, \texttt{ap-northeast-1}), \texttt{K8sAegisOperator} translates $x^*$ into declarative \texttt{karpenter.sh/v1} \texttt{NodePool} manifests (\texttt{aegis-ondemand-anchor} plus AZ-partitioned \texttt{aegis-spot-*} pools with proportional \texttt{weight}, exact \texttt{limits.cpu}/\texttt{limits.memory}, \texttt{WhenEmptyOrUnderutilized} consolidation, and allow-listed instance families excluding compromised pools), hardened \texttt{karpenter.k8s.aws/v1} \texttt{EC2NodeClass} specs (\texttt{al2023@latest}), and proactive \texttt{autoscaling/v1} \texttt{Scale} patches.
 \end{itemize}
 
 \begin{table*}[t]
 \centering
-\caption{Experiment B: 30-Seed Monte Carlo Confidence Intervals ($\text{Mean} \pm 95\%\text{ CI}$) and Paired Two-Sided Wilcoxon Signed-Rank Tests}
+\caption{Experiment B: 30 Disjoint Real Rolling Windows (6 Windows $\times$ 5 Datasets, Exact Student-$t$ $95\%$ CI, $t_{29,0.975}=2.045$)}
 \label{tab:wilcoxon}
-\resizebox{0.96\textwidth}{!}{%
+\resizebox{0.97\textwidth}{!}{%
 \begin{tabular}{lccccc}
 \hline
-\textbf{Strategy ($N=30$ Independent Seeds)} & \textbf{Annualized Cost (USD)} & \textbf{Savings vs.\ Iso-OD} & \textbf{P99 SLA Continuity (\%)} & \textbf{Total Breaches} & \textbf{Spot-Storm Breaches} \\
+\textbf{Strategy ($N=30$ Disjoint Real Windows)} & \textbf{Savings vs.\ Iso-OD} & \textbf{Savings vs.\ 1-Yr SP} & \textbf{P99 Continuity (\%)} & \textbf{Total Breaches} & \textbf{Storm Breaches} \\
 \hline
-Reactive HPA (55\% CPU Target) & \$15,372.89 $\pm$ \$5.48   & --- \emph{(Fails SLA)}   & 67.05\% $\pm$ 0.26\% & 197.73 $\pm$ 1.54 & 16.50 $\pm$ 0.45 \\
-Iso-SLA 100\% On-Demand        & \$37,087.89 $\pm$ \$501.29 & 0.00\% $\pm$ 0.00\%      & 98.81\% $\pm$ 0.09\% & 7.13 $\pm$ 0.56   & 2.83 $\pm$ 0.30 \\
-Greedy Cheapest Spot           & \$13,597.69 $\pm$ \$177.17 & 63.33\% $\pm$ 0.03\%     & 91.31\% $\pm$ 0.29\% & 52.17 $\pm$ 1.72  & 21.43 $\pm$ 0.86 \\
-Static 30/70 Mixed Heuristic   & \$19,523.37 $\pm$ \$261.41 & 47.36\% $\pm$ 0.02\%     & 97.78\% $\pm$ 0.12\% & 13.33 $\pm$ 0.74  & 7.03 $\pm$ 0.56 \\
-\textbf{AegisScale (Full ACI + $G/G/c$ + CVaR MILP)} & \textbf{\$23,516.33 $\pm$ \$316.45} & \textbf{36.59\% $\pm$ 0.03\%} & \textbf{99.39\% $\pm$ 0.07\%} & \textbf{3.67 $\pm$ 0.42} & \textbf{1.67 $\pm$ 0.34} \\
+Reactive HPA (55\% CPU Target) & 31.59\% $\pm$ 15.75\% \emph{(Fails)} & 17.30\% $\pm$ 22.09\% \emph{(Fails)} & 88.46\% $\pm$ 4.43\% & 34.63 $\pm$ 13.29 & 5.07 $\pm$ 1.70 \\
+Iso-SLA 100\% On-Demand        & 0.00\% $\pm$ 0.00\%                  & -13.50\% $\pm$ 4.88\%                & 98.96\% $\pm$ 0.21\% & 3.13 $\pm$ 0.63   & 0.20 $\pm$ 0.15 \\
+1-Yr Compute Savings Plan + OD & 10.81\% $\pm$ 3.63\%                 & 0.00\% $\pm$ 0.00\%                  & 98.96\% $\pm$ 0.21\% & 3.13 $\pm$ 0.63   & 0.20 $\pm$ 0.15 \\
+Greedy Spot (Karpenter-style)  & 63.01\% $\pm$ 0.46\%                 & 57.91\% $\pm$ 2.20\%                 & 86.52\% $\pm$ 2.10\% & 40.43 $\pm$ 6.29  & 23.00 $\pm$ 3.87 \\
+Static 30/70 (Warn-Aware)      & 46.41\% $\pm$ 0.33\%                 & 39.07\% $\pm$ 2.99\%                 & 96.98\% $\pm$ 0.60\% & 9.07 $\pm$ 1.81   & 0.93 $\pm$ 0.37 \\
+\textbf{AegisScale (Full)}     & \textbf{35.71\% $\pm$ 0.48\%}        & \textbf{26.88\% $\pm$ 3.70\%}        & \textbf{99.43\% $\pm$ 0.16\%} & \textbf{1.70 $\pm$ 0.49} & \textbf{0.00 $\pm$ 0.00} \\
 \hline
-\multicolumn{6}{l}{\footnotesize \emph{Wilcoxon Signed-Rank $p$-values:} Cost vs.\ Iso-OD: $p = 1.86 \times 10^{-9}$; Continuity vs.\ Greedy: $p = 1.86 \times 10^{-9}$; Storm Breaches vs.\ Static 30/70: $p = 1.86 \times 10^{-9}$.}
+\multicolumn{6}{l}{\footnotesize \emph{Two-Sided Paired Wilcoxon $p$-Values:} Cost vs.\ Iso-OD: $1.86 \times 10^{-9}$; Cost vs.\ 1-Yr SP: $1.86 \times 10^{-9}$; Cont.\ vs.\ Greedy: $1.86 \times 10^{-9}$; Cont.\ vs.\ Static: $1.86 \times 10^{-9}$; Cont.\ vs.\ HPA: $2.29 \times 10^{-6}$.}
 \end{tabular}%
 }
 \end{table*}
 
 \begin{table*}[t]
 \centering
-\caption{Experiment C: Five-Way Architectural Ablation Study on Real AWS ELB and Viral Flash-Crowd Workloads}
+\caption{Experiment C: Unconfounded Six-Way Architectural Ablation (Strictly One Variable Changed per Row)}
 \label{tab:ablation}
 \resizebox{0.96\textwidth}{!}{%
 \begin{tabular}{lcccccc}
 \hline
 \textbf{Model Variant} & \textbf{ELB Annual Cost} & \textbf{ELB Continuity} & \textbf{ELB Breaches} & \textbf{Viral Annual Cost} & \textbf{Viral Continuity} & \textbf{Viral Breaches} \\
 \hline
-\textbf{Full AegisScale (ACI + $G/G/c$ + Copula CVaR)} & \textbf{\$23,015} & \textbf{99.17\%} & \textbf{5} & \textbf{\$32,601} & \textbf{99.17\%} & \textbf{5} \\
-w/o ACI (Point RLS $\times 1.05$ Headroom)             & \$7,678           & 75.50\%          & 147        & \$7,274           & 92.33\%          & 46 \\
-Static Split-Conformal (Non-Adaptive $\gamma=10^{-9}$) & \$21,426          & 99.50\%          & 3          & \$36,282 \emph{(+11.3\%)} & 99.50\% & 3 \\
-w/o $G/G/c$ Sizing (Naive 85\% Mean Utilization)       & \$26,476 \emph{(+15.0\%)} & 100.00\% & 0          & \$37,786 \emph{(+15.9\%)} & 99.33\% & 4 \\
-w/o Copula Diversification ($\rho=0, \theta_{\max}=1$) & \$18,506          & 98.83\%          & 7          & \$26,205          & 98.67\%          & 8 \\
+\textbf{Full AegisScale (ACI + $G/G/c$ + Copula CVaR)} & \textbf{\$25,942} & \textbf{99.00\%} & \textbf{6} & \textbf{\$31,903} & \textbf{99.50\%} & \textbf{3} \\
+w/o ACI (Point RLS $\times 1.05$ Headroom)             & \$7,410           & 69.67\%          & 182        & \$7,163           & 87.17\%          & 77 \\
+Static Split-Conformal ($\gamma = 10^{-9}$ only)       & \$24,526          & 99.33\%          & 4          & \$39,820 \emph{(+24.8\%)} & 99.50\% & 3 \\
+w/o $G/G/c$ Sizing (Naive 85\% Mean Utilization)       & \$29,928 \emph{(+15.4\%)} & 99.50\% & 3          & \$36,928 \emph{(+15.8\%)} & 99.50\% & 3 \\
+w/o Copula Diversification ($\rho=0, \theta_{\max}=1$) & \$24,314          & 99.17\%          & 5          & \$30,112          & 99.33\%          & 4 \\
+w/o 2-Min Spot Warnings (Copula CVaR Only)             & \$25,852          & 99.00\%          & 6          & \$31,855          & 99.50\%          & 3 \\
 \hline
 \end{tabular}%
 }
@@ -240,16 +256,16 @@ w/o Copula Diversification ($\rho=0, \theta_{\max}=1$) & \$18,506          & 98.
 \begin{figure*}[t]
     \centering
     \includegraphics[width=0.95\textwidth]{../docs/figures/ablation_and_coldstart.png}
-    \caption{(a) Five-way architectural ablation trade-off across ELB and Viral Flash traces; (b) $\mathrm{P99}$ SLA continuity resilience under Kubernetes node cold-start provisioning lag ($0\,\mathrm{s}$ to $180\,\mathrm{s}$).}
+    \caption{(a) Strictly unconfounded six-way ablation across ELB and Viral traces; (b) $\mathrm{P99}$ SLA continuity under true $1$-minute ($\Delta\tau = 60\,\mathrm{s}$) node cold-start provisioning lag ($0\,\mathrm{s}$ to $180\,\mathrm{s}$) with recalled Spot node eviction.}
     \label{fig:ablation}
 \end{figure*}
 
 \section{Empirical and Statistical Evaluation}
 
-All experiments lock a single hyperparameter policy ($\alpha_{\mathrm{target}} = 0.015$, $\gamma = 0.05$, $\tau_{\mathrm{SLA}} = 25\,\mathrm{ms}$, $\beta = 0.95$, $\epsilon_{\max} = 0$, $\rho_{\mathrm{floor}} = 0.25$, $\theta_{\max} = 0.22$) with \emph{zero per-dataset retuning}.
+All experiments lock a single hyperparameter policy ($\alpha_{\mathrm{target}} = 0.015$, $\gamma = 0.05$, $\tau_{\mathrm{SLA}} = 25\,\mathrm{ms}$, $\beta = 0.95$, $\epsilon_{\max} = 0$, $\rho_{\mathrm{floor}} = 0.25$, $\theta_{\max} = 0.22$) with \emph{zero per-dataset retuning}. To eliminate lookahead bias, every trace is normalized strictly by its causal initial $60$-step warmup prefix mean, and regional Spot recall storms are generated exogenously without inspecting future traffic peaks. Moreover, to ensure baseline fairness, \texttt{Static 30/70 (Warn-Aware)} reacts to AWS two-minute interruption notices by shifting Spot allocations to non-warned pools, and we include a realistic enterprise \texttt{1-Yr Compute Savings Plan + OD} baseline ($32\%$ discount on a causally committed $30\text{th}$-percentile base floor billed continuously, plus On-Demand for bursts).
 
-\subsection{Multi-Dataset Generalization Across Four Real Regimes}
-Table~\ref{tab:multidata} and Fig.~\ref{fig:multidata} evaluate four distinct real-world traces from the Numenta Anomaly Benchmark (NAB)~\cite{lavin2015evaluating}: (1) \emph{AWS-ELB-Web} (HTTP load balancer traffic, $4.77\times$ peak/mean; full 14-day 4,032-interval trajectory in Fig.~\ref{fig:real_elb}), (2) \emph{AWS-EC2-Network} (network ingress bursts, $5.33\times$), (3) \emph{AWS-RDS-Compute} (database CPU step-shift regime, $2.37\times$), and (4) \emph{Viral-Flash-Traffic} (15,902 intervals of real Twitter AAPL event volume exhibiting extreme $22.65\times$ Pareto flash surges). Across all four workloads, empirical ACI miscoverage converged identically to $1.500\%$ ($\alpha_{\mathrm{target}} = 0.015$), sustaining $99.17\%$--$99.50\%$ $\mathrm{P99}$ continuity while cutting spend by $34.45\%$--$37.10\%$ versus Iso-SLA On-Demand. On the full 14-day (4,032-interval) \emph{AWS-ELB-Web} run ($10.61\times$ full-horizon peak/mean), \textsc{AegisScale} achieved $1.488\%$ miscoverage, $99.53\%$ continuity, zero Spot-storm breaches, and $35.72\%$ savings (\$24,419 vs.\ \$37,989/yr).
+\subsection{Multi-Dataset Generalization Across Five Real Regimes}
+Table~\ref{tab:multidata} and Fig.~\ref{fig:multidata} evaluate five real public workloads: four Numenta NAB traces~\cite{lavin2015evaluating} (\emph{AWS-ELB-Web}, \emph{AWS-EC2-Network}, \emph{AWS-RDS-Compute}, and \emph{Viral-Flash-Traffic} with $22.65\times$ Pareto surges) plus the October 2024 \emph{Microsoft Azure Multimodal LLM Inference} trace~\cite{patel2024splitwise} ($10^6$ production requests aggregated into $2,016$ five-minute intervals, $2.41\times$ diurnal peak/mean). Across all five workloads, honest finite-cap ACI miscoverage is $1.503\%$, sustaining $99.00\%$--$100.00\%$ $\mathrm{P99}$ continuity with $0$--$1$ storm breaches while reducing annualized spend by $35.00\%$--$37.13\%$ versus Iso-SLA On-Demand and $17.20\%$--$35.46\%$ versus 1-Yr Savings Plan + OD. Notably, on the steadier diurnal \emph{Azure-LLM-2024} workload, Savings Plan captures $21.49\%$ against On-Demand, narrowing \textsc{AegisScale}'s net margin to $17.20\%$---a critical distinction for FinOps practitioners. By contrast, Karpenter-style Greedy Spot cuts spend by $60.9\%$--$63.8\%$ but breaks the SLA severely ($87.33\%$--$97.33\%$ continuity, $16$--$76$ breaches). On the full 14-day ($4,032$-interval) \emph{AWS-ELB-Web} trace (Fig.~\ref{fig:real_elb}, $10.61\times$ peak/mean), \textsc{AegisScale} achieves $1.513\%$ miscoverage, $99.28\%$ continuity, $0$ storm breaches, and $35.75\%$ savings (\$24,148 vs.\ \$37,586/yr).
 
 \begin{figure}[t]
     \centering
@@ -258,19 +274,68 @@ Table~\ref{tab:multidata} and Fig.~\ref{fig:multidata} evaluate four distinct re
     \label{fig:real_elb}
 \end{figure}
 
-\subsection{30-Seed Statistical Significance (Wilcoxon Signed-Rank)}
-To rule out stochastic luck across Spot recall realizations, Table~\ref{tab:wilcoxon} reports $N=30$ independent Monte Carlo seeds on \emph{AWS-ELB-Web}. \textsc{AegisScale} achieves $99.39\% \pm 0.07\%$ continuity and $36.59\% \pm 0.03\%$ savings over Iso-SLA On-Demand, winning strictly on $30/30$ seeds across cost vs.\ Iso-SLA On-Demand, continuity vs.\ Greedy Spot, continuity vs.\ Reactive HPA, and storm breaches vs.\ Static 30/70 (two-sided paired Wilcoxon signed-rank $p = 1.86 \times 10^{-9} \ll 10^{-8}$ on every hypothesis).
+\subsection{30 Disjoint Real Rolling Windows (Exact Student-$t$ \& Wilcoxon)}
+Rather than perturbing a single trajectory, Table~\ref{tab:wilcoxon} evaluates $N=30$ \emph{disjoint} real rolling windows ($6$ non-overlapping $300$-step windows per dataset across all $5$ traces) with exact Student-$t$ $95\%$ confidence intervals ($t_{29,0.975} = 2.045$). \textsc{AegisScale} achieves $35.71\% \pm 0.48\%$ savings over Iso-SLA On-Demand, $26.88\% \pm 3.70\%$ savings over 1-Yr Savings Plan + OD, and $99.43\% \pm 0.16\%$ $\mathrm{P99}$ continuity with $0.00 \pm 0.00$ storm breaches---winning with statistical significance across all five paired two-sided Wilcoxon signed-rank tests ($p = 1.86 \times 10^{-9}$ vs.\ Iso-OD, Savings Plan, Greedy Spot, and warn-aware Static 30/70; $p = 2.29 \times 10^{-6}$ vs.\ Reactive HPA).
 
-\subsection{Architectural Ablations, Sensitivity, and Cold-Start Lag}
-Table~\ref{tab:ablation} and Fig.~\ref{fig:ablation}(a) isolate each mathematical layer:
+\subsection{Unconfounded Ablations, Price Sensitivity, \& Cold-Start Lag}
+Table~\ref{tab:ablation} and Fig.~\ref{fig:ablation}(a) isolate each layer by changing strictly one variable per row:
 \begin{itemize}
-    \item \textbf{Removing ACI (\texttt{w/o ACI}):} Collapses ELB continuity from $99.17\%$ to $75.50\%$ ($193$ combined breaches vs.\ $10$).
-    \item \textbf{Freezing $\alpha_t$ (\texttt{Static Split-Conformal}):} Fails to relax residual inflation after the $22.65\times$ viral spike, inflating annual Viral trace spend by $+11.3\%$ (+\$3,681/yr).
-    \item \textbf{Removing $G/G/c$ (\texttt{Naive 85\% Mean Util}):} Ignores multi-server pooling economies, wasting $+15.0\%$ to $+15.9\%$ compute expenditure.
-    \item \textbf{Ignoring Copula Correlation (\texttt{w/o Copula}):} Increases combined SLA breaches by $+50\%$ ($15$ vs.\ $10$) during correlated AZ/family recalls.
+    \item \textbf{w/o ACI:} Collapses ELB continuity to $69.67\%$ ($182$ breaches) and Viral continuity to $87.17\%$ ($77$ breaches).
+    \item \textbf{Static Conformal ($\gamma = 10^{-9}$ only):} Fails to relax residual inflation after the $22.65\times$ viral surge, increasing Viral spend by $+24.8\%$ (\$39,820 vs.\ \$31,903/yr).
+    \item \textbf{w/o $G/G/c$ Sizing (85\% Util):} Ignores multi-server pooling, wasting $+15.4\%$ (ELB) to $+15.8\%$ (Viral) spend.
+    \item \textbf{w/o 2-Min Spot Warnings:} Preserves identical $99.00\%$/$99.50\%$ continuity and $0$ storm breaches, proving that copula $\mathrm{CVaR}_{0.95}$ diversification protects against correlated recalls even when provider advance warnings are absent or delayed.
 \end{itemize}
 
-Varying AZ recall correlation $\rho_{\mathrm{az}}$ from $0.00$ to $0.75$ (Table~\ref{tab:scalability} top), \textsc{AegisScale} automatically widens cross-AZ pool diversification, improving continuity from $99.00\%$ to $99.33\%$ with only a modest $9.1\%$ hedging premium (\$21,797 to \$23,787/yr). Under Kubernetes node cold-start lag (Fig.~\ref{fig:ablation}(b)), a realistic $120\,\mathrm{s}$ boot delay degrades Reactive HPA to $39.50\%$ continuity ($2,829\,\mathrm{ms}$ mean $\mathrm{P99}$ wait), whereas \textsc{AegisScale} sustains $98.83\%$ at $60\,\mathrm{s}$ and $97.33\%$ at $120\,\mathrm{s}$.
+\begin{table}[t]
+\centering
+\caption{Experiment D: Spot Price Multiplier Sensitivity ($0.7\times$--$1.6\times$) and HiGHS MILP Scalability ($S=200$)}
+\label{tab:sensitivity}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{cccc|ccc}
+\hline
+\textbf{Spot Mult.} & \textbf{ELB vs.\ OD} & \textbf{Azure vs.\ OD} & \textbf{Azure vs.\ SP} & \textbf{Pools $K$} & \textbf{Median ms} & \textbf{P99 ms} \\
+\hline
+$0.7\times$ & 47.43\% & 45.41\% & +30.46\% & 21  & 81.5 ms  & 321.0 ms \\
+$1.0\times$ & 36.86\% & 35.00\% & +17.20\% & 42  & 97.1 ms  & 341.6 ms \\
+$1.3\times$ & 26.57\% & 24.95\% & +4.40\%  & 84  & 154.9 ms & 336.4 ms \\
+$1.6\times$ & 16.27\% & 14.68\% & \textbf{-8.67\%} & 147 & 255.1 ms & 649.9 ms \\
+---         & ---     & ---     & ---      & 210 & 466.7 ms & 1405.8 ms \\
+\hline
+\end{tabular}%
+}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Experiment E: Empirical 2D Kubernetes/Karpenter Benchmark (Memory-Heavy Pod: $1\,\text{vCPU}, 7\,\text{GiB}$, 2024 Azure Trace)}
+\label{tab:k8s2d}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llccc}
+\hline
+\textbf{AWS Region} & \textbf{Allocator} & \textbf{Annual Cost} & \textbf{P99 Cont.} & \textbf{Stranded vCPU} \\
+\hline
+\texttt{us-east-1}      & 1D CPU-Only Mixed         & \$26,940 & 4.00\%   & 75.0\% \\
+                        & Karpenter Greedy 2D Spot  & \$30,756 & 94.33\%  & 25.0\% \\
+                        & \textbf{AegisScale 2D K8s} & \textbf{\$49,684} & \textbf{100.00\%} & \textbf{40.6\%} \\
+\hline
+\texttt{eu-west-1}      & 1D CPU-Only Mixed         & \$30,065 & 4.00\%   & 75.0\% \\
+                        & Karpenter Greedy 2D Spot  & \$34,319 & 95.33\%  & 25.0\% \\
+                        & \textbf{AegisScale 2D K8s} & \textbf{\$52,994} & \textbf{100.00\%} & \textbf{39.9\%} \\
+\hline
+\texttt{ap-northeast-1} & 1D CPU-Only Mixed         & \$32,133 & 3.67\%   & 75.0\% \\
+                        & Karpenter Greedy 2D Spot  & \$37,348 & 93.67\%  & 25.0\% \\
+                        & \textbf{AegisScale 2D K8s} & \textbf{\$60,911} & \textbf{100.00\%} & \textbf{41.3\%} \\
+\hline
+\end{tabular}%
+}
+\end{table}
+
+\textbf{Spot Price Sensitivity (Table~\ref{tab:sensitivity}, left):} Because Spot discounts fluctuate across regions and market cycles, reporting a single dollar headline can mislead. Sweeping Spot prices from $0.7\times$ to $1.6\times$ baseline shows that \textsc{AegisScale}'s savings vs.\ On-Demand span $47.4\%$ down to $14.7\%$ while preserving identical $99.0\%$--$100.0\%$ continuity. Crucially, on the steady diurnal \emph{Azure-LLM-2024} trace, savings vs.\ a 1-Yr Savings Plan cross zero near $1.45\times$ Spot pricing ($-8.67\%$ at $1.6\times$), establishing a transparent FinOps break-even rule: when Spot discounts narrow below $\sim 45\%$ on steady workloads, committed Savings Plans dominate hedged Spot.
+
+\textbf{AZ Correlation \& True 1-Minute Cold-Start Lag:} Sweeping $\rho_{\mathrm{az}} \in [0.00, 0.75]$ on \emph{AWS-ELB-Web} increases \textsc{AegisScale} continuity from $98.83\%$ to $99.50\%$ ($0$ storm breaches) for a $9.3\%$ hedging premium (\$24,536 to \$26,829/yr). On the $1$-minute interpolated ELB trace ($\Delta\tau = 60\,\mathrm{s}$) with \emph{recalled Spot eviction} from ready pools (Fig.~\ref{fig:ablation}(b)), \textsc{AegisScale} outperforms Reactive HPA at $0\,\mathrm{s}$ ($99.33\%$ vs.\ $96.31\%$) and $60\,\mathrm{s}$ ($93.79\%$ vs.\ $87.92\%$), but degrades below 100\% On-Demand Reactive HPA once boot lag reaches $120\,\mathrm{s}$ ($75.34\%$ vs.\ $77.85\%$) and $180\,\mathrm{s}$ ($61.41\%$ vs.\ $70.30\%$). This exposes a fundamental physical limit: when node readiness exceeds AWS's $120\,\mathrm{s}$ Spot termination window, evicted Spot replacements cannot finish booting in time without pre-warmed standby pools or cached container images.
+
+\subsection{Empirical 2D Kubernetes/Karpenter Multi-Region Study}
+Table~\ref{tab:k8s2d} executes \texttt{K8sAegisOperator} over $300$ intervals of the 2024 Azure trace across \texttt{us-east-1}, \texttt{eu-west-1}, and \texttt{ap-northeast-1} for memory-heavy inference pods ($1\,\text{vCPU}, 7\,\text{GiB}, 40\,\text{RPS/pod}$), emitting $6$ validated \texttt{karpenter.sh/v1}, \texttt{EC2NodeClass}, and \texttt{Scale} manifests per cycle. A 1D CPU-only allocator picks cheap compute nodes (\texttt{c6a}/\texttt{c7g}), stranding $75.0\%$ of vCPUs and collapsing SLA continuity to $3.7\%$--$4.0\%$. Karpenter-style Greedy 2D Spot minimizes stranding ($25.0\%$) on single-pool \texttt{r7g} nodes, but suffers $14$--$19$ SLA breaches ($93.7\%$--$95.3\%$ continuity). \textsc{AegisScale} achieves $100.00\%$ continuity ($0$ breaches) across all three regions while keeping stranded vCPU at $39.9\%$--$41.3\%$ through cross-family (\texttt{r7g}/\texttt{m7g}/\texttt{m6i}) CVaR diversification.
 
 \begin{figure}[t]
     \centering
@@ -279,30 +344,13 @@ Varying AZ recall correlation $\rho_{\mathrm{az}}$ from $0.00$ to $0.75$ (Table~
     \label{fig:scalability}
 \end{figure}
 
-\begin{table}[t]
-\centering
-\caption{AZ Correlation Sensitivity ($\rho_{\mathrm{az}}$) and HiGHS MILP Scalability ($K$)}
-\label{tab:scalability}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{cccc|ccc}
-\hline
-$\rho_{\mathrm{az}}$ & \textbf{Aegis Cont.} & \textbf{Greedy Cont.} & \textbf{Aegis USD} & \textbf{Pools $K$} & \textbf{Median ms} & \textbf{P99 ms} \\
-\hline
-0.00 & 99.00\% & 91.00\% & \$21,797 & 21  & 42.3 ms  & 122.5 ms \\
-0.25 & 99.17\% & 90.33\% & \$22,089 & 42  & 37.5 ms  & 82.9 ms \\
-0.55 & 99.17\% & 90.83\% & \$22,831 & 84  & 160.7 ms & 322.8 ms \\
-0.75 & 99.33\% & 90.33\% & \$23,787 & 147 & 250.6 ms & 505.8 ms \\
----  & ---     & ---     & ---      & 210 & 328.1 ms & 1073.4 ms \\
-\hline
-\end{tabular}%
-}
-\end{table}
+\subsection{Solver Scalability and Limitations}
+Figure~\ref{fig:scalability} and Table~\ref{tab:sensitivity} (right) benchmark single-threaded HiGHS solve latency across $K \in [21, 210]$ pools ($S = 200$): median solve time stays $81.5$--$466.7\,\mathrm{ms}$, and P99 stays $<650\,\mathrm{ms}$ through $K=147$. At $K=210$, P99 reaches $1,405.8\,\mathrm{ms}$ (exceeding a $1\,\mathrm{s}$ sub-budget, though still $<2.4\%$ of a $60\,\mathrm{s}$ control loop).
 
-\subsection{Solver Scalability and Operational Limitations}
-Figure~\ref{fig:scalability} and Table~\ref{tab:scalability} (right) benchmark HiGHS solve latency from $K=21$ to $K=210$ candidate pools across 6 AZs and 12 instance families: median solve time remains $328.1\,\mathrm{ms}$ even at $K=210$, comfortably within a $1\,\mathrm{s}$ sub-budget of a $60\,\mathrm{s}$ control loop. Two practical boundary conditions merit transparency: (1) when container image pulls push node readiness to $\tau_{\mathrm{boot}} = 180\,\mathrm{s}$ during instantaneous step-jumps, continuity dips to $95.17\%$ (Fig.~\ref{fig:ablation}(b)), motivating EKS Managed Node Group Warm Pools or pre-cached Bottlerocket/AL2023 snapshots for multi-gigabyte container images; and (2) when all Spot pools in a region experience simultaneous correlated recalls ($\rho_{\mathrm{az}} \to 1$), cost converges gracefully toward On-Demand pricing due to the $\mathrm{CVaR}_\beta$ guardrail.
+Three methodological limitations frame future work: (1) all evaluations are trace-driven simulations rather than live multi-AZ AWS EKS runs (which require substantial cloud credits to observe genuine Spot recall storms); (2) realized latency is evaluated via the analytical Kingman--Sakasegawa $G/G/c$ oracle (with $\rho \ge 1$ intervals reported separately as \emph{Unstable \%} and censored at $5,000\,\mathrm{ms}$), rather than packet-level discrete-event simulation; and (3) as shown in Fig.~\ref{fig:ablation}(b), workloads with heavy container images ($\tau_{\mathrm{boot}} \ge 120\,\mathrm{s}$) require pre-warmed node pools or Bottlerocket/AL2023 EBS snapshot caching alongside \textsc{AegisScale}.
 
 \section{Conclusion}
-\textsc{AegisScale} unifies adaptive conformal prediction, heavy-traffic queueing bounds, 2D Kubernetes Karpenter bin-packing, and correlated Spot CVaR integer optimization into a fast, statistically verified cloud control plane---demonstrating consistent $34\%$--$39\%$ compute savings with $>99.1\%$ $\mathrm{P99}$ SLA continuity across diverse real-world production workloads.
+\textsc{AegisScale} unifies strictly causal adaptive conformal prediction, heavy-traffic $G/G/c$ queueing bounds, 2D Kubernetes/Karpenter bin-packing, and correlated Spot $\mathrm{CVaR}_{0.95}$ integer optimization into a fast, reproducible cloud control plane---delivering $35\%$--$37\%$ savings versus equal-SLA On-Demand ($17\%$--$35\%$ versus 1-Year Compute Savings Plans) with $99.0\%$--$100.0\%$ $\mathrm{P99}$ SLA continuity across five real production traces, while clearly characterizing Spot-pricing and cold-start operational boundaries.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
