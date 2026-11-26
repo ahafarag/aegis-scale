@@ -49,7 +49,6 @@ class AegisLiveDemoStack(Stack):
             architecture=_lambda.Architecture.X86_64,
             memory_size=1536,
             timeout=Duration.seconds(29),
-            reserved_concurrent_executions=3,  # Hard concurrency cap for strict wallet protection
             log_retention=logs.RetentionDays.TWO_WEEKS,
             environment={
                 "AEGIS_CLUSTER_ID": "public-live-demo",

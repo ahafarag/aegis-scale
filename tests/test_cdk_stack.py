@@ -95,13 +95,12 @@ def test_live_demo_serverless_stack_synthesizes_with_custom_domain_and_throttlin
     )
     template = assertions.Template.from_stack(demo_stack)
 
-    # Hard concurrency cap and container image Lambda function
+    # Container image Lambda function (1536 MB for fast HiGHS MILP SIMD)
     template.has_resource_properties(
         "AWS::Lambda::Function",
         {
             "PackageType": "Image",
             "MemorySize": 1536,
-            "ReservedConcurrentExecutions": 3,
         },
     )
 

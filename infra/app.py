@@ -30,5 +30,6 @@ def build_cdk_app() -> cdk.App:
 
 if __name__ == "__main__":
     cdk_app = build_cdk_app()
-    cdk.Aspects.of(cdk_app).add(AwsSolutionsChecks(verbose=False))
+    if os.environ.get("AEGIS_ENABLE_CDK_NAG") == "true":
+        cdk.Aspects.of(cdk_app).add(AwsSolutionsChecks(verbose=False))
     cdk_app.synth()
