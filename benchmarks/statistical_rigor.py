@@ -67,6 +67,7 @@ HTTP_GATEWAY_TIMEOUT_MS = 5000.0
 
 STRATEGY_NAMES = [
     "Reactive_HPA_55",
+    "Seasonal_Predictive_OD",
     "IsoSLA_100_OnDemand",
     "OD_SavingsPlan_IsoSLA",
     "Greedy_Cheapest_Spot",
@@ -294,15 +295,21 @@ def _apply_boot_delay(
     return snapshot_ready, billed_now
 
 
-def _scale_spot_prices(pools: list[ComputePool], spot_price_mult: float) -> list[ComputePool]:
-    """Scale hourly prices of Spot pools and ensure generous enterprise EC2 quotas for viral spikes."""
+def _scale_spot_prices(
+    pools: list[ComputePool],
+    spot_price_mult: float,
+    interruption_rate_mult: float = 1.0,
+) -> list[ComputePool]:
+    """Scale Spot prices and interruption hazards and ensure generous quotas for viral spikes."""
     out: list[ComputePool] = []
     for p in pools:
         if p.market == "spot":
+            scaled_prob = min(0.45, max(0.002, p.base_interruption_prob * interruption_rate_mult))
             out.append(
                 p.model_copy(
                     update={
                         "hourly_price_usd": round(p.hourly_price_usd * spot_price_mult, 6),
+                        "base_interruption_prob": round(scaled_prob, 5),
                         "max_instances": max(p.max_instances, 600),
                     }
                 )
@@ -321,10 +328,15 @@ def _evaluate_strategies_trajectory(
     boot_delay_steps: int = 0,
     dt_hours: float = 5.0 / 60.0,
     spot_price_mult: float = 1.0,
+    interruption_rate_mult: float = 1.0,
     record_coldstart_only: bool = False,
 ) -> dict[str, Any]:
     """Simulate all provisioning strategies on a real RPS trace and exogenous Spot recalls."""
-    pools = _scale_spot_prices(default_us_east_1_pools(), spot_price_mult)
+    pools = _scale_spot_prices(
+        default_us_east_1_pools(),
+        spot_price_mult=spot_price_mult,
+        interruption_rate_mult=interruption_rate_mult,
+    )
     pool_map = {p.pool_id: p for p in pools}
     all_pids = [p.pool_id for p in pools]
     n_steps = len(rps_trace)
@@ -366,6 +378,11 @@ def _evaluate_strategies_trajectory(
     pending_state: dict[str, dict[str, list[list[int]]]] = {s: {} for s in active_strats}
 
     prev_rps = float(rps_trace[0])
+    # Causal seasonal predictive autoscaler state (24h diurnal slot EWMA + rolling Gaussian 1.65*sigma guard)
+    diurnal_period = max(12, int(round(24.0 / dt_hours)))
+    seasonal_slots: dict[int, float] = {}
+    seasonal_ewma = prev_rps
+    seasonal_resids: list[float] = []
 
     for t in range(n_steps):
         true_rps = float(rps_trace[t])
@@ -415,6 +432,22 @@ def _evaluate_strategies_trajectory(
                 "AegisScale_Full": alloc_aegis,
             }
         else:
+            # Causal seasonal predictive autoscaler (diurnal slot + EWMA + 1.65*sigma rolling guard on OD)
+            slot_next = t % diurnal_period
+            slot_est = seasonal_slots.get(slot_next, seasonal_ewma)
+            seasonal_pt = 0.55 * seasonal_ewma + 0.45 * slot_est
+            resid_std = float(np.std(seasonal_resids[-36:], ddof=1)) if len(seasonal_resids) >= 3 else 0.15 * prev_rps
+            seasonal_pred_rps = max(prev_rps, seasonal_pt + 1.65 * resid_std)
+            seasonal_vcpu = required_safe_vcpus(
+                seasonal_pred_rps,
+                policy.per_vcpu_rps_capacity,
+                policy.p99_queue_delay_sla_ms,
+                0.99,
+                policy.arrival_cv2,
+                policy.service_cv2,
+            )
+            alloc_seasonal_od = {cheapest_od.pool_id: max(1, int(math.ceil(seasonal_vcpu / cheapest_od.vcpu)))}
+
             alloc_isosla_od = {cheapest_od.pool_id: max(1, int(math.ceil(safe_vcpu / cheapest_od.vcpu)))}
             gr_od = max(1, int(math.ceil(0.10 * safe_vcpu / cheapest_od.vcpu)))
             gr_sp = max(0, int(math.ceil(0.90 * safe_vcpu / cheapest_spot.vcpu)))
@@ -435,6 +468,7 @@ def _evaluate_strategies_trajectory(
 
             target_by_strat = {
                 "Reactive_HPA_55": alloc_reactive,
+                "Seasonal_Predictive_OD": alloc_seasonal_od,
                 "IsoSLA_100_OnDemand": alloc_isosla_od,
                 "OD_SavingsPlan_IsoSLA": alloc_isosla_od,
                 "Greedy_Cheapest_Spot": alloc_greedy,
@@ -489,6 +523,15 @@ def _evaluate_strategies_trajectory(
                 if storm_active:
                     storm_breaches[s_name] += 1
 
+        # Update causal seasonal state AFTER evaluating step t
+        slot_cur = t % diurnal_period
+        pred_used = 0.55 * seasonal_ewma + 0.45 * seasonal_slots.get(slot_cur, seasonal_ewma)
+        seasonal_resids.append(true_rps - pred_used)
+        seasonal_ewma = 0.35 * true_rps + 0.65 * seasonal_ewma
+        if slot_cur in seasonal_slots:
+            seasonal_slots[slot_cur] = 0.40 * true_rps + 0.60 * seasonal_slots[slot_cur]
+        else:
+            seasonal_slots[slot_cur] = true_rps
         prev_rps = true_rps
 
     total_hours = n_steps * dt_hours
@@ -570,6 +613,11 @@ def _run_ablation_variant(
     breaches = 0
     storm_breaches = 0
     prev_rps = float(rps_trace[0])
+    # Causal seasonal predictive autoscaler state (24h diurnal slot EWMA + rolling Gaussian 1.65*sigma guard)
+    diurnal_period = max(12, int(round(24.0 / dt_hours)))
+    seasonal_slots: dict[int, float] = {}
+    seasonal_ewma = prev_rps
+    seasonal_resids: list[float] = []
 
     for t in range(n_steps):
         true_rps = float(rps_trace[t])
@@ -647,6 +695,15 @@ def _run_ablation_variant(
             if storm_active:
                 storm_breaches += 1
 
+        # Update causal seasonal state AFTER evaluating step t
+        slot_cur = t % diurnal_period
+        pred_used = 0.55 * seasonal_ewma + 0.45 * seasonal_slots.get(slot_cur, seasonal_ewma)
+        seasonal_resids.append(true_rps - pred_used)
+        seasonal_ewma = 0.35 * true_rps + 0.65 * seasonal_ewma
+        if slot_cur in seasonal_slots:
+            seasonal_slots[slot_cur] = 0.40 * true_rps + 0.60 * seasonal_slots[slot_cur]
+        else:
+            seasonal_slots[slot_cur] = true_rps
         prev_rps = true_rps
 
     total_hours = n_steps * dt_hours
@@ -791,6 +848,48 @@ def _worker_spot_price_task(args: tuple[str, float, np.ndarray, int]) -> tuple[s
         "savings_vs_isosla_od_pct": res["AegisScale_Full"]["savings_vs_isosla_od_pct"],
         "savings_vs_savings_plan_pct": res["AegisScale_Full"]["savings_vs_savings_plan_pct"],
         "sla_continuity_pct": res["AegisScale_Full"]["sla_continuity_pct"],
+    }
+
+
+def _worker_interruption_rate_task(args: tuple[float, np.ndarray, int]) -> tuple[float, dict[str, Any]]:
+    """Worker entrypoint for Experiment D Spot interruption-rate multiplier sweep (0.5x - 3.0x)."""
+    rate_mult, elb_trace, num_scenarios = args
+    policy = default_publication_policy(num_scenarios=num_scenarios)
+    res = _evaluate_strategies_trajectory(
+        rps_trace=elb_trace,
+        policy=policy,
+        seed=404,
+        interruption_rate_mult=rate_mult,
+    )
+    return rate_mult, {
+        "interruption_rate_multiplier": rate_mult,
+        "AegisScale_annualized_cost_usd": res["AegisScale_Full"]["annualized_cost_usd"],
+        "savings_vs_isosla_od_pct": res["AegisScale_Full"]["savings_vs_isosla_od_pct"],
+        "AegisScale_sla_continuity_pct": res["AegisScale_Full"]["sla_continuity_pct"],
+        "Greedy_Spot_sla_continuity_pct": res["Greedy_Cheapest_Spot"]["sla_continuity_pct"],
+        "Static_30_70_sla_continuity_pct": res["Static_30_70_Mixed"]["sla_continuity_pct"],
+    }
+
+
+def _worker_capacity_sweep_task(args: tuple[float, np.ndarray, int]) -> tuple[float, dict[str, Any]]:
+    """Worker entrypoint for Experiment D per-vCPU service capacity mu sweep (75 - 175 RPS/vCPU)."""
+    mu_val, elb_trace, num_scenarios = args
+    policy = default_publication_policy(num_scenarios=num_scenarios).model_copy(
+        update={"per_vcpu_rps_capacity": mu_val}
+    )
+    res = _evaluate_strategies_trajectory(
+        rps_trace=elb_trace,
+        policy=policy,
+        seed=404,
+    )
+    return mu_val, {
+        "per_vcpu_rps_capacity": mu_val,
+        "AegisScale_annualized_cost_usd": res["AegisScale_Full"]["annualized_cost_usd"],
+        "IsoSLA_OD_annualized_cost_usd": res["IsoSLA_100_OnDemand"]["annualized_cost_usd"],
+        "savings_vs_isosla_od_pct": res["AegisScale_Full"]["savings_vs_isosla_od_pct"],
+        "savings_vs_savings_plan_pct": res["AegisScale_Full"]["savings_vs_savings_plan_pct"],
+        "AegisScale_sla_continuity_pct": res["AegisScale_Full"]["sla_continuity_pct"],
+        "Seasonal_OD_sla_continuity_pct": res["Seasonal_Predictive_OD"]["sla_continuity_pct"],
     }
 
 
@@ -1065,6 +1164,14 @@ def _summarize_rolling_window_results(
         raw_arrays["AegisScale_Full"]["sla_continuity_pct"],
         raw_arrays["Static_30_70_Mixed"]["sla_continuity_pct"],
     )
+    p_cont_seasonal = _safe_wilcoxon_two_sided(
+        raw_arrays["AegisScale_Full"]["sla_continuity_pct"],
+        raw_arrays["Seasonal_Predictive_OD"]["sla_continuity_pct"],
+    )
+    p_cost_seasonal = _safe_wilcoxon_two_sided(
+        raw_arrays["AegisScale_Full"]["annualized_cost_usd"],
+        raw_arrays["Seasonal_Predictive_OD"]["annualized_cost_usd"],
+    )
 
     return {
         "n_disjoint_windows": n_windows,
@@ -1077,6 +1184,8 @@ def _summarize_rolling_window_results(
             "p_value_continuity_vs_greedy": p_cont_greedy,
             "p_value_continuity_vs_reactive": p_cont_reactive,
             "p_value_continuity_vs_static": p_cont_static,
+            "p_value_continuity_vs_seasonal": p_cont_seasonal,
+            "p_value_cost_vs_seasonal": p_cost_seasonal,
             "all_core_significant_at_alpha_0_05": bool(
                 max(p_cost_od, p_cost_sp, p_cont_greedy, p_cont_reactive) < 0.05
             ),
@@ -1108,6 +1217,7 @@ def generate_publication_figures(
     ds_names = [spec.name for spec in DATASET_SPECS]
     strat_labels = {
         "Reactive_HPA_55": "Reactive HPA (55%)",
+        "Seasonal_Predictive_OD": "Seasonal Predictive OD",
         "IsoSLA_100_OnDemand": "Iso-SLA 100% OD",
         "OD_SavingsPlan_IsoSLA": "1-Yr Savings Plan + OD",
         "Greedy_Cheapest_Spot": "Greedy Spot (Karpenter)",
@@ -1116,6 +1226,7 @@ def generate_publication_figures(
     }
     strat_colors = {
         "Reactive_HPA_55": "#64748b",
+        "Seasonal_Predictive_OD": "#8b5cf6",
         "IsoSLA_100_OnDemand": "#2563eb",
         "OD_SavingsPlan_IsoSLA": "#0ea5e9",
         "Greedy_Cheapest_Spot": "#ef4444",
@@ -1125,7 +1236,7 @@ def generate_publication_figures(
 
     x = np.arange(len(ds_names), dtype=np.float64)
     n_s = len(STRATEGY_NAMES)
-    width = 0.13
+    width = 0.112
     offsets = (np.arange(n_s) - (n_s - 1) / 2.0) * width
 
     fig1, (ax_cont, ax_cost) = plt.subplots(1, 2, figsize=(15.0, 6.2))
@@ -1488,6 +1599,20 @@ def run_statistical_rigor_suite(
         ]
         fut_spot = [executor.submit(_worker_spot_price_task, task) for task in spot_tasks]
 
+        # Experiment D.3b: Spot interruption-rate multiplier sweep (0.5x, 1.0x, 2.0x, 3.0x)
+        intr_mults = [0.5, 1.0, 2.0, 3.0]
+        fut_intr = [
+            executor.submit(_worker_interruption_rate_task, (rm, elb_trace, num_scenarios))
+            for rm in intr_mults
+        ]
+
+        # Experiment D.3c: Per-vCPU service capacity mu sweep (75, 100, 125, 175 RPS/vCPU)
+        mu_grid = [75.0, 100.0, 125.0, 175.0]
+        fut_mu = [
+            executor.submit(_worker_capacity_sweep_task, (mv, elb_trace, num_scenarios))
+            for mv in mu_grid
+        ]
+
         exp_a_results: dict[str, Any] = {}
         for fut in fut_exp_a:
             ds_name, ds_payload = fut.result()
@@ -1514,6 +1639,12 @@ def run_statistical_rigor_suite(
             spot_raw[(dn, mv)] = payload
         for dn in ("AWS-ELB-Web", "Azure-LLM-Inference-2024"):
             spot_sens[dn] = [spot_raw[(dn, m)] for m in spot_mults]
+
+        intr_map = dict(fut.result() for fut in fut_intr)
+        intr_sweep_list = [intr_map[rm] for rm in intr_mults]
+
+        mu_map = dict(fut.result() for fut in fut_mu)
+        mu_sweep_list = [mu_map[mv] for mv in mu_grid]
 
     # Experiment D.4: Single-thread timing of HiGHS MILP scalability without CPU contention
     scalability_list = run_highs_scalability_sweep(
@@ -1550,6 +1681,8 @@ def run_statistical_rigor_suite(
             "az_correlation_sweep": az_sweep_list,
             "cold_start_delay_sweep": cold_sweep_list,
             "spot_price_multiplier_sensitivity": spot_sens,
+            "interruption_rate_sensitivity": intr_sweep_list,
+            "capacity_mu_sensitivity": mu_sweep_list,
             "highs_scalability_sweep": scalability_list,
         },
         "experiment_e_k8s_2d_multiregion": exp_e_results,

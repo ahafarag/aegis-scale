@@ -101,6 +101,8 @@ def test_statistical_rigor_fast_mode_end_to_end(tmp_path: Path) -> None:
     assert exp_d["cold_start_delay_sweep"][1]["step_resolution_seconds"] == 60
     assert len(exp_d["spot_price_multiplier_sensitivity"]["AWS-ELB-Web"]) == 4
     assert len(exp_d["spot_price_multiplier_sensitivity"]["Azure-LLM-Inference-2024"]) == 4
+    assert len(exp_d["interruption_rate_sensitivity"]) == 4
+    assert len(exp_d["capacity_mu_sensitivity"]) == 4
     assert [r["pool_count_k"] for r in exp_d["highs_scalability_sweep"]] == [21, 42, 84, 147, 210]
 
     # Experiment E: 2D Kubernetes/Karpenter across all 3 AWS regions
