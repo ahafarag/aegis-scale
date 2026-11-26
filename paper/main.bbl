@@ -65,9 +65,18 @@ Q.~Huangfu and J.~A.~J. Hall, ``Parallelizing the dual revised simplex
   method,'' \emph{Mathematical Programming Computation}, vol.~10, no.~1, pp.
   119--142, 2018.
 
-\bibitem{wilcoxon1945individual}
-F.~Wilcoxon, ``Individual comparisons by ranking methods,'' \emph{Biometrics
-  Bulletin}, vol.~1, no.~6, pp. 80--83, 1945.
+\bibitem{lavin2015evaluating}
+A.~Lavin and S.~Ahmad, ``Evaluating real-time anomaly detection algorithms --
+  the {Numenta} anomaly benchmark,'' in \emph{IEEE 14th International
+  Conference on Machine Learning and Applications (ICMLA)}, 2015, pp. 38--44.
+
+\bibitem{qiu2025modserve}
+H.~Qiu, A.~Biswas, Z.~Zhao, J.~Mohan, A.~Khare, E.~Choukse, {\'I}.~Goiri,
+  Z.~Zhang, H.~Shen, C.~Bansal, R.~Ramjee, and R.~Fonseca, ``{ModServe}:
+  Modality- and stage-aware resource disaggregation for scalable multimodal
+  model serving,'' in \emph{Proceedings of the ACM Symposium on Cloud Computing
+  (SoCC)}, 2025, azure Public Dataset Oct 2024 Multimodal LMM Trace,
+  \texttt{github.com/Azure/AzurePublicDataset}.
 
 \bibitem{rzadca2020autopilot}
 K.~Rzadca, P.~Findeisen, J.~Swiderski, P.~Zych, P.~Broniek, J.~Kusmierek,
@@ -84,10 +93,5 @@ D.~Salinas, V.~Flunkert, J.~Gasthaus, and T.~Januschowski, ``{DeepAR}:
 \bibitem{rockafellar2000optimization}
 R.~T. Rockafellar and S.~Uryasev, ``Optimization of conditional
   value-at-risk,'' \emph{Journal of Risk}, vol.~2, no.~3, pp. 21--41, 2000.
-
-\bibitem{lavin2015evaluating}
-A.~Lavin and S.~Ahmad, ``Evaluating real-time anomaly detection algorithms --
-  the {Numenta} anomaly benchmark,'' in \emph{IEEE 14th International
-  Conference on Machine Learning and Applications (ICMLA)}, 2015, pp. 38--44.
 
 \end{thebibliography}
