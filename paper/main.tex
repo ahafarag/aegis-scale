@@ -361,13 +361,35 @@ Table~\ref{tab:k8s2d} executes \texttt{K8sAegisOperator} over $300$ intervals of
 \subsection{Solver Scalability}
 Figure~\ref{fig:scalability} and Table~\ref{tab:sensitivity} (top right) benchmark single-threaded HiGHS solve latency across $K \in [21, 210]$ pools ($S = 200$): median solve time stays $81.5$--$466.7\,\mathrm{ms}$, and P99 stays $<650\,\mathrm{ms}$ through $K=147$. At $K=210$, P99 reaches $1,405.8\,\mathrm{ms}$ (exceeding a $1\,\mathrm{s}$ sub-budget, though still $<2.4\%$ of a $60\,\mathrm{s}$ control loop).
 
+\subsection{Independent 28M-Event DES \& Live 4-Node Kubernetes (\texttt{kind}) Emulation}
+To break circularity with the analytical $G/G/c$ formula and verify real Kubernetes actuation, we conduct two independent empirical validations at zero cloud cost:
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.95\textwidth]{../docs/figures/des_validation.png}
+    \caption{Independent 28M-event FCFS $G/G/c$ Discrete-Event Queue Simulator (DES) validation: (a) Kingman--Sakasegawa analytical $\mathrm{P99}$ vs.\ empirical 100k-request DES $\mathrm{P99}$ across utilization $\rho$; (b) end-to-end DES SLA continuity with inter-interval queue backlog carryover on \emph{AWS-ELB-Web} and \emph{Azure-LMM-2024}.}
+    \label{fig:des}
+\end{figure*}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.95\textwidth]{../docs/figures/kind_live_k8s.png}
+    \caption{Live 4-node Kubernetes (\texttt{kind}) cluster emulation on Docker Desktop replaying an October 2024 Azure ModServe burst (2,230 real concurrent HTTP requests/run) with real correlated Spot node drains (\texttt{kubectl cordon + drain}) at $t=20\,\mathrm{s}$ and $t=25\,\mathrm{s}$.}
+    \label{fig:kind}
+\end{figure*}
+
+\begin{enumerate}
+    \item \textbf{28-Million-Event FCFS $G/G/c$ Discrete-Event Simulator (Fig.~\ref{fig:des}):} Simulating individual Gamma-distributed arrivals ($c_a^2=1.6$) and service times ($c_s^2=1.2$, mean $8\,\mathrm{ms}$) across $c \in \{8, 32\}$ servers yields a calibration MAE of $1.62\,\mathrm{ms}$ at $c=32$ ($4.88\,\mathrm{ms}$ overall) against Eq.~\eqref{eq:ggc_quantile}. Replaying $200$-step trajectories ($26.63 \times 10^6$ individual request events with inter-interval backlog carryover) confirms \textsc{AegisScale} achieves $99.00\%$ DES continuity on \emph{AWS-ELB-Web} ($0$ storm breaches, $0.00\,\text{pp}$ delta vs.\ analytical) and $100.00\%$ on \emph{Azure-LMM-2024} ($0.24\,\mathrm{ms}$ mean $\mathrm{P99}$). Conversely, overloaded baselines degrade further under real queue carryover: \texttt{Greedy Spot} drops from $84.00\%$ analytical to $79.00\%$ DES on ELB ($76.00\%$ on Azure), and \texttt{Seasonal Predictive OD} drops to $90.00\%$ on ELB ($96.00\%$ on Azure).
+    \item \textbf{Live 4-Node Kubernetes (\texttt{kind}) Emulation (Fig.~\ref{fig:kind}):} On a real 4-node \texttt{kind} cluster ($1$ control-plane + $3$ workers labeled \texttt{on-demand/us-east-1a} and \texttt{spot/us-east-1b,c}), we deploy a real HTTP service ($\sim 8\,\mathrm{ms}$ CPU work per request) and replay a $60\,\mathrm{s}$ scaled Azure ModServe burst ($2,230$ concurrent async HTTP requests/run) while injecting correlated Spot preemptions via \texttt{kubectl cordon} and \texttt{kubectl drain} on both Spot workers at $t=20\,\mathrm{s}$ and $t=25\,\mathrm{s}$. Unhedged \texttt{Greedy Spot} suffers a $60.58\%$ overall HTTP error rate ($79.99\%$ post-drain; $1,351/2,230$ failed requests), $0$ ready pods (full blackout from $t=30\,\mathrm{s}$ to $59\,\mathrm{s}$), and $60.63\,\mathrm{s}$ recovery after uncordon. Under the exact same dual-worker drain, \texttt{K8sAegisOperator} (3 On-Demand anchor pods + 4 diversified Spot pods with \texttt{PodDisruptionBudget} and graceful \texttt{preStop}) sustains a \textbf{0.00\% HTTP error rate} ($2,230/2,230$ HTTP 200 OK), $\mathrm{P50} = 33.14\,\mathrm{ms}$, $\mathrm{P99} = 115.59\,\mathrm{ms}$, and $3$ surviving ready pods throughout the drain at $38.89\%$ estimated fleet savings vs.\ all-On-Demand.
+\end{enumerate}
+
 \section{Limitations and Threats to Validity}
 
-We highlight five methodological and operational boundaries that qualify our findings and define next steps for live deployment:
+We highlight five methodological and operational boundaries that qualify our findings and define next steps for production deployment:
 \begin{enumerate}
-    \item \textbf{Trace-Driven Simulation vs.\ Live Cloud Execution:} All experiments are reproducible trace-driven simulations rather than live multi-AZ AWS EKS runs. Observing genuine correlated Spot recall storms on live EKS requires sustained multi-week cluster spend; local Kubernetes emulation (e.g., \texttt{kind} with injected node drains) and academic-credit EKS trials remain essential next steps.
-    \item \textbf{Dataset Vintage:} While we include the October 2024 Microsoft Azure Multimodal LMM trace~\cite{qiu2025modserve}, four of our five traces originate from the 2014--2015 Numenta Anomaly Benchmark~\cite{lavin2015evaluating} at $5$-minute resolution. Modern high-frequency serverless and GPU-serving clusters exhibit sub-second burst dynamics not captured at $5$-minute granularity.
-    \item \textbf{Analytical Queueing Oracle:} Realized $\mathrm{P99}$ latency is evaluated via the analytical Kingman--Sakasegawa $G/G/c$ approximation (reporting $\rho \ge 1$ intervals separately as \emph{Unstable \%} and censoring at $5,000\,\mathrm{ms}$) rather than a packet-level discrete-event simulator.
+    \item \textbf{Local \texttt{kind} Emulation vs.\ Live Multi-AZ AWS EKS:} While Section~V-F validates real Kubernetes scheduling, \texttt{kubectl drain} eviction, and live HTTP traffic on a 4-node \texttt{kind} cluster, observing native AWS Spot reclamation dynamics and EC2 node-launch latency still requires a live multi-AZ EKS cluster with Karpenter v1 and AWS Fault Injection Service (FIS).
+    \item \textbf{Dataset Vintage:} Alongside the October 2024 Microsoft Azure Multimodal LMM trace~\cite{qiu2025modserve}, four of our five multi-dataset traces originate from the 2014--2015 Numenta Anomaly Benchmark~\cite{lavin2015evaluating} at $5$-minute resolution. Sub-second serverless and GPU-serving bursts merit higher-frequency evaluation.
+    \item \textbf{Analytical Oracle Scope:} Although our 28M-event DES validation (Fig.~\ref{fig:des}) confirms close agreement with Eq.~\eqref{eq:ggc_quantile} on 200-step ELB and Azure replays, the full 30-window sweep (Table~\ref{tab:wilcoxon}) still evaluates realized wait via the analytical $G/G/c$ oracle (reporting $\rho \ge 1$ intervals separately as \emph{Unstable \%} and censoring at $5,000\,\mathrm{ms}$).
     \item \textbf{Cold-Start Physical Limit ($\tau_{\mathrm{boot}} \ge 120\,\mathrm{s}$):} As demonstrated in Fig.~\ref{fig:ablation}(b), once container image pulls push node readiness to $\ge 120\,\mathrm{s}$, evicted Spot replacements cannot finish booting within AWS's two-minute interruption notice. Heavy-image workloads require EKS Managed Node Group Warm Pools or pre-cached Bottlerocket/AL2023 EBS snapshots alongside \textsc{AegisScale}.
     \item \textbf{Spot Pricing Break-Even \& Window Dependence:} Dollar savings depend strongly on regional Spot discounts; on steady diurnal workloads, committed 1-Year Savings Plans overtake hedged Spot once Spot prices rise above $\sim 1.45\times$ baseline (Table~\ref{tab:sensitivity}). Finally, the $30$ rolling windows in Table~\ref{tab:wilcoxon} share within-trace autocorrelation across the $5$ source traces and should be interpreted as paired window-level evidence rather than $30$ independent deployments.
 \end{enumerate}

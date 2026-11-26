@@ -54,6 +54,17 @@ Evaluated with a **single locked policy** ($\alpha_{\text{target}} = 0.015$, $\t
 
 ---
 
+## Independent 28M-Event DES & Live 4-Node Kubernetes (`kind`) Emulation
+
+* **28-Million-Event FCFS $G/G/c$ Discrete-Event Simulator ([benchmarks/discrete_event_validation.py](benchmarks/discrete_event_validation.py)):** Independently simulates individual Gamma-distributed arrivals and service completions with inter-interval queue carryover (`1.62 ms` calibration MAE at `c=32`). Confirms **99.00%** DES SLA continuity on `AWS-ELB-Web` (`0` storm breaches) and **100.00%** on `Azure-LMM-2024` (`0.24 ms` mean P99), whereas `Greedy Spot` drops to `79.00%` (ELB) and `76.00%` (Azure) under real backlog carryover.
+* **Live 4-Node Kubernetes (`kind`) Cluster Emulation ([benchmarks/kind_k8s_emulation.py](benchmarks/kind_k8s_emulation.py)):** Deploys a real HTTP microservice across 4 Kubernetes nodes (`on-demand` + 2 `spot` workers), replays `2,230` real concurrent async HTTP requests from the October 2024 Azure ModServe trace, and injects real correlated Spot drains (`kubectl cordon + drain`). Unhedged `Greedy Spot` suffers **60.58% HTTP error rate** (`79.99%` post-drain, full blackout, `60.63s` recovery), whereas `AegisScale` sustains **0.00% HTTP error rate** (`2,230/2,230` HTTP 200 OK, `P99 = 115.59 ms`) throughout the dual-node drain.
+
+![Independent DES Validation](docs/figures/des_validation.png)
+
+![Live 4-Node Kubernetes kind Emulation](docs/figures/kind_live_k8s.png)
+
+---
+
 ## Manuscript & Documentation
 
 * **Compiled Preprint Manuscript (PDF):** [paper/main.pdf](paper/main.pdf)
