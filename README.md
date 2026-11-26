@@ -6,6 +6,7 @@
 [![Karpenter](https://img.shields.io/badge/EKS_Karpenter-v1_Ready-326CE5.svg)](src/aegis_scale/k8s/karpenter.py)
 [![IaC](https://img.shields.io/badge/AWS_CDK-v2_Verified-FF9900.svg)](infra/stack.py)
 [![Paper](https://img.shields.io/badge/Preprint_Manuscript-PDF-b31b1b.svg)](paper/main.pdf)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24572369.svg)](https://doi.org/10.5281/zenodo.24572369)
 [![Live Demo](https://img.shields.io/badge/Live_Demo-aegis.zenithcodigo.com-10b981.svg)](https://aegis.zenithcodigo.com)
 
 > **Live Interactive Control Plane & Karpenter v1 Simulator:** [https://aegis.zenithcodigo.com](https://aegis.zenithcodigo.com) *(Scale-to-zero AWS Lambda Container + HTTP API in `eu-west-1`)*
