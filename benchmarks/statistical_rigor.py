@@ -26,6 +26,7 @@ import csv
 from dataclasses import dataclass
 import json
 import math
+import multiprocessing
 import os
 from pathlib import Path
 import sys
@@ -1435,9 +1436,10 @@ def run_statistical_rigor_suite(
     # True 1-minute interpolated ELB trace for cold-start sweep (dt=60s)
     elb_1min_full = resample_5min_to_1min(elb_trace[: min(len(elb_trace), 120 if not fast else 24)])
 
-    max_workers = min(os.cpu_count() or 4, 8)
+    max_workers = min(os.cpu_count() or 4, 2 if fast else 8)
+    mp_ctx = multiprocessing.get_context("spawn")
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers, mp_context=mp_ctx) as executor:
         # Experiment A: 5 real production datasets
         fut_exp_a = [
             executor.submit(_worker_dataset_task, (spec, steps, num_scenarios))
