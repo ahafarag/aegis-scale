@@ -37,7 +37,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"aegis_scale.api" = ["*.html"]
+"aegis_scale.api" = ["*.html", "*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -264,6 +264,19 @@ def create_app(public_demo: bool | None = None) -> FastAPI:
             return _DASHBOARD_PATH.read_text(encoding="utf-8")
         return "<h1>AegisScale Control Plane Running</h1>"
 
+    _favicon_path = Path(__file__).resolve().parent / "favicon.svg"
+
+    @application.get("/favicon.svg")
+    @application.get("/favicon.ico")
+    def serve_favicon() -> Response:
+        if _favicon_path.exists():
+            return Response(
+                content=_favicon_path.read_bytes(),
+                media_type="image/svg+xml",
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+        return Response(status_code=404)
+
     @application.get("/health")
     def health() -> dict[str, Any]:
         return {

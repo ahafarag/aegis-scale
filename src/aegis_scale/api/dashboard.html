@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AegisScale | Executive Cloud FinOps & EKS Karpenter Control Plane</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="shortcut icon" href="/favicon.svg" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
@@ -34,6 +36,8 @@
       margin-bottom: 24px;
     }
     h1 { margin: 0 0 6px 0; font-size: 1.65rem; letter-spacing: -0.02em; }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-logo { width: 46px; height: 46px; flex-shrink: 0; filter: drop-shadow(0 0 10px rgba(16, 185, 129, 0.25)); }
     .subtitle { color: var(--muted); font-size: 0.95rem; margin: 0; }
     .badge {
       background: rgba(16, 185, 129, 0.14);
@@ -113,9 +117,12 @@
 <body>
   <div class="container">
     <header>
-      <div>
-        <h1>AegisScale Executive FinOps & EKS Karpenter Control Plane</h1>
-        <p class="subtitle">Adaptive Conformal Inference + 2D G/G/c Tail-Latency Sizing + Rockafellar-Uryasev CVaR Spot MILP</p>
+      <div class="brand">
+        <img class="brand-logo" src="/favicon.svg" alt="AegisScale Logo" />
+        <div>
+          <h1>AegisScale Executive FinOps & EKS Karpenter Control Plane</h1>
+          <p class="subtitle">Adaptive Conformal Inference + 2D G/G/c Tail-Latency Sizing + Rockafellar-Uryasev CVaR Spot MILP</p>
+        </div>
       </div>
       <div class="badge">EKS Karpenter v1 + Multi-Region Ready</div>
     </header>
