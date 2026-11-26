@@ -136,13 +136,15 @@ DATASET_SPECS: list[DatasetSpec] = [
 
 
 def default_publication_policy(num_scenarios: int = 150) -> SLAPolicy:
-    """Return the single fixed zero-retuning SLAPolicy used across all datasets."""
+    """Return the single fixed zero-retuning SLAPolicy with genuinely active CVaR_0.95 budget."""
     return SLAPolicy(
         alpha_target=0.015,
         aci_gamma=0.05,
         on_demand_floor_ratio=0.25,
         max_spot_pool_share=0.22,
         max_cvar_shortfall_vcpu=0.0,
+        max_cvar_shortfall_ratio=0.05,
+        cvar_penalty_weight=0.01,
         cvar_beta=0.95,
         num_scenarios=num_scenarios,
     )
@@ -199,10 +201,10 @@ def _build_exogenous_storm_schedule(
     n_steps: int,
     seed: int,
 ) -> list[tuple[int, int, str, str, set[str]]]:
-    """Generate correlated regional AZ + family Spot recall storms INDEPENDENTLY of future RPS."""
+    """Generate correlated regional AZ + uniformly sampled family Spot storms independent of RPS."""
     rng = np.random.default_rng(seed)
     az_choices = ["us-east-1a", "us-east-1b", "us-east-1c"]
-    storm_fams = {"c6a", "c7g", "m6a"}
+    all_spot_fams = ["c6a", "c7g", "m7g", "m6a", "c6i", "m6i"]
 
     target_count = 2 if n_steps <= 120 else 3
     usable_start = max(12, n_steps // 8)
@@ -219,7 +221,8 @@ def _build_exogenous_storm_schedule(
         s_end = min(n_steps - 1, center + half_w)
         az1 = az_choices[(seed + s_i) % len(az_choices)]
         az2 = az_choices[(seed + s_i + 1) % len(az_choices)]
-        storms.append((s_start, s_end, az1, az2, storm_fams))
+        sampled_fams = set(str(f) for f in rng.choice(all_spot_fams, size=3, replace=False))
+        storms.append((s_start, s_end, az1, az2, sampled_fams))
     return storms
 
 
@@ -401,7 +404,7 @@ def _evaluate_strategies_trajectory(
                 for p in pools:
                     if p.market == "spot" and (
                         (p.az == target_az1 and p.family in target_fams)
-                        or (p.az == target_az2 and p.family in {"c6a", "c7g"})
+                        or (p.az == target_az2 and p.family in set(sorted(target_fams)[:2]))
                     ):
                         recalled_ids.add(p.pool_id)
                         warned_spot_ids.add(p.pool_id)
@@ -634,7 +637,7 @@ def _run_ablation_variant(
                 for p in pools:
                     if p.market == "spot" and (
                         (p.az == target_az1 and p.family in target_fams)
-                        or (p.az == target_az2 and p.family in {"c6a", "c7g"})
+                        or (p.az == target_az2 and p.family in set(sorted(target_fams)[:2]))
                     ):
                         recalled_ids.add(p.pool_id)
                         if variant_name != "Ablation_No_Spot_Warnings":
@@ -890,6 +893,30 @@ def _worker_capacity_sweep_task(args: tuple[float, np.ndarray, int]) -> tuple[fl
         "savings_vs_savings_plan_pct": res["AegisScale_Full"]["savings_vs_savings_plan_pct"],
         "AegisScale_sla_continuity_pct": res["AegisScale_Full"]["sla_continuity_pct"],
         "Seasonal_OD_sla_continuity_pct": res["Seasonal_Predictive_OD"]["sla_continuity_pct"],
+    }
+
+
+def _worker_cvar_budget_task(args: tuple[float, np.ndarray, int]) -> tuple[float, dict[str, Any]]:
+    """Worker entrypoint for Experiment D CVaR_0.95 shortfall ratio Pareto sweep (0% - 10%)."""
+    ratio, elb_trace, num_scenarios = args
+    policy = default_publication_policy(num_scenarios=num_scenarios).model_copy(
+        update={
+            "max_cvar_shortfall_ratio": ratio,
+            "cvar_penalty_weight": 10.0 if ratio == 0.0 else 0.01,
+        }
+    )
+    res = _evaluate_strategies_trajectory(
+        rps_trace=elb_trace,
+        policy=policy,
+        seed=404,
+    )
+    return ratio, {
+        "max_cvar_shortfall_ratio": ratio,
+        "AegisScale_annualized_cost_usd": res["AegisScale_Full"]["annualized_cost_usd"],
+        "savings_vs_isosla_od_pct": res["AegisScale_Full"]["savings_vs_isosla_od_pct"],
+        "savings_vs_savings_plan_pct": res["AegisScale_Full"]["savings_vs_savings_plan_pct"],
+        "AegisScale_sla_continuity_pct": res["AegisScale_Full"]["sla_continuity_pct"],
+        "total_sla_breaches": res["AegisScale_Full"]["total_sla_breaches"],
     }
 
 
@@ -1613,6 +1640,13 @@ def run_statistical_rigor_suite(
             for mv in mu_grid
         ]
 
+        # Experiment D.3d: Active CVaR_0.95 shortfall budget Pareto sweep (0%, 2%, 5%, 10%)
+        cvar_ratios = [0.0, 0.02, 0.05, 0.10]
+        fut_cvar = [
+            executor.submit(_worker_cvar_budget_task, (cr, elb_trace, num_scenarios))
+            for cr in cvar_ratios
+        ]
+
         exp_a_results: dict[str, Any] = {}
         for fut in fut_exp_a:
             ds_name, ds_payload = fut.result()
@@ -1645,6 +1679,9 @@ def run_statistical_rigor_suite(
 
         mu_map = dict(fut.result() for fut in fut_mu)
         mu_sweep_list = [mu_map[mv] for mv in mu_grid]
+
+        cvar_map = dict(fut.result() for fut in fut_cvar)
+        cvar_sweep_list = [cvar_map[cr] for cr in cvar_ratios]
 
     # Experiment D.4: Single-thread timing of HiGHS MILP scalability without CPU contention
     scalability_list = run_highs_scalability_sweep(
@@ -1683,6 +1720,7 @@ def run_statistical_rigor_suite(
             "spot_price_multiplier_sensitivity": spot_sens,
             "interruption_rate_sensitivity": intr_sweep_list,
             "capacity_mu_sensitivity": mu_sweep_list,
+            "cvar_budget_pareto_sweep": cvar_sweep_list,
             "highs_scalability_sweep": scalability_list,
         },
         "experiment_e_k8s_2d_multiregion": exp_e_results,

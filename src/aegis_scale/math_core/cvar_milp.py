@@ -187,13 +187,17 @@ class CVaRPortfolioOptimizer:
         lhs_list.append(np.full(s_len, c_req, dtype=np.float64))
         rhs_list.append(np.full(s_len, np.inf, dtype=np.float64))
 
-        # 4. Hard CVaR guardrail: eta + tail_scale * sum_s u_s <= max_cvar_shortfall_vcpu
+        # 4. Hard CVaR guardrail: eta + tail_scale * sum_s u_s <= effective CVaR budget
+        effective_cvar_cap = max(
+            float(pol.max_cvar_shortfall_vcpu),
+            float(pol.max_cvar_shortfall_ratio) * c_req,
+        )
         cvar_cols = [idx_eta] + list(range(idx_u, idx_u + s_len))
         cvar_vals = [1.0] + [tail_scale] * s_len
         row_cvar = csc_matrix((cvar_vals, ([0] * len(cvar_cols), cvar_cols)), shape=(1, n_vars))
         constraint_blocks.append(row_cvar)
         lhs_list.append(np.array([-np.inf], dtype=np.float64))
-        rhs_list.append(np.array([pol.max_cvar_shortfall_vcpu], dtype=np.float64))
+        rhs_list.append(np.array([effective_cvar_cap], dtype=np.float64))
 
         # 5. Churn linearization (2*K rows) when previous_allocations is provided:
         #    z_k - x_k >= -x_prev_k   and   z_k + x_k >= x_prev_k
@@ -214,14 +218,16 @@ class CVaRPortfolioOptimizer:
         lhs = np.concatenate(lhs_list)
         rhs = np.concatenate(rhs_list)
 
+        solver_time_limit = 0.25 if k_len <= 64 else 1.5
         res = milp(
             c=c_obj,
             integrality=integrality,
             bounds=Bounds(lb, ub),
             constraints=LinearConstraint(a_mat, lhs, rhs),
+            options={"mip_rel_gap": 0.015, "time_limit": solver_time_limit},
         )
 
-        if not res.success or res.x is None:
+        if res.x is None or res.status not in (0, 1):
             raise InfeasibleCapacityError(
                 f"CVaR MILP infeasible or failed (status={res.status}): {res.message}"
             )

@@ -83,6 +83,12 @@ class SLAPolicy(BaseModel):
         ge=0.0,
         description="Hard upper bound on CVaR_beta capacity shortfall in vCPUs",
     )
+    max_cvar_shortfall_ratio: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=0.5,
+        description="Proportional CVaR_beta shortfall budget as a fraction of C_req (effective cap = max(vcpu, ratio * C_req))",
+    )
     on_demand_floor_ratio: float = Field(
         default=0.25,
         ge=0.0,
